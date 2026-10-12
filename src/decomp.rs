@@ -3932,7 +3932,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
 
         (0, 0x35C9) => {
             cpu.set_de(0x836D);
-            for _ in 0..3 {
+            for _ in 0..4 {
                 decomp_clear_big_score_row_35d5_body(cpu, bus);
             }
             cpu.ret_subroutine(bus);

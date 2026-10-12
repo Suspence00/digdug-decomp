@@ -117,8 +117,8 @@ impl DigDugBus {
             }
         }
 
-        // Rising edge prolonged for two $71 reads (2 frames)
-        let keymask_p = (self.keymask_d[0] ^ self.keymask_d[2]) & self.keymask_d[0];
+        // Single-read rising edge for Namco 51XX fire button press detection
+        let keymask_p = (self.keymask_d[0] ^ self.keymask_d[1]) & self.keymask_d[0];
 
         match self.namco_command {
             0x71 => {
@@ -411,5 +411,173 @@ impl DigDugMachine {
 
     pub fn snapshot(&self) -> GameStateSnapshot {
         GameStateSnapshot::from_shared_ram(&self.bus.shared_ram, self.bus.namco_credit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_highscore_big_score_flash_and_initial_entry() {
+        let rom_dir = Path::new("roms/extracted");
+        let roms = DigDugRoms::load_from_extracted_dir(rom_dir).expect("Failed to load ROMs");
+        let mut machine = DigDugMachine::new(roms);
+
+        // Set Player 1 Game Over state with a score of 25,000 ($8414..$8416 little-endian BCD)
+        machine.bus.write_byte(0, 0x8400, 0x48); // In-game (bit 6) + initialized (bit 3), Player 1
+        machine.bus.write_byte(0, 0x8401, 0x80); // Player dead
+        machine.bus.write_byte(0, 0x8402, 0x13); // Game Over banner finished
+        machine.bus.write_byte(0, 0x861C, 0x00);
+        machine.bus.write_byte(0, 0x861E, 0x00);
+        machine.bus.write_byte(0, 0x840A, 0x00); // 0 lives remaining
+        machine.bus.write_byte(0, 0x840D, 0x03); // Round 3
+        machine.bus.write_byte(0, 0x8657, 0x00); // Not attract demo
+        machine.bus.write_byte(0, 0x8414, 0x00);
+        machine.bus.write_byte(0, 0x8415, 0x50);
+        machine.bus.write_byte(0, 0x8416, 0x02);
+        // Trigger high-score check ($87CC bit 1 = 1, bit 2 = 0)
+        machine.bus.write_byte(0, 0x87CC, 0x02);
+
+        let mut saw_flash_on = false;
+        let mut saw_flash_off = false;
+
+        // Step through the #1 High Score "CONGRATULATIONS !" flashing big score banner ($3552..$356D)
+        for _ in 0..400 {
+            machine.run_frame();
+            if (0x3552..=0x356D).contains(&machine.cpus[0].pc) {
+                let f23 = machine.bus.read_byte(0, 0x8423);
+                if (f23 & 0x1F) == 0x02 {
+                    // Flash ON phase: check that all 4 rows ($836D..$8370) have non-blank tiles
+                    for row_off in 0..4u16 {
+                        let has_digit_tile = (0..0x18u16).any(|col| {
+                            let addr = (0x836Du16 + row_off).wrapping_sub(col * 0x20);
+                            machine.bus.read_byte(0, addr) != 0x40
+                        });
+                        assert!(
+                            has_digit_tile,
+                            "Row {} of big score should contain digit tiles when flashed ON",
+                            row_off
+                        );
+                    }
+                    saw_flash_on = true;
+                } else if (f23 & 0x1F) == 0x12 {
+                    // Flash OFF phase: ALL 4 rows ($836D..$8370) across all 24 columns must be cleared to 0x40!
+                    for row_off in 0..4u16 {
+                        for col in 0..0x18u16 {
+                            let addr = (0x836Du16 + row_off).wrapping_sub(col * 0x20);
+                            let tile = machine.bus.read_byte(0, addr);
+                            assert_eq!(
+                                tile, 0x40,
+                                "Row {} col {} at ${:04X} was not cleared during big score flash-OFF!",
+                                row_off, col, addr
+                            );
+                        }
+                    }
+                    saw_flash_off = true;
+                }
+                if saw_flash_on && saw_flash_off {
+                    // End the fanfare wait so we transition into initial entry ($33EB)
+                    machine.bus.write_byte(0, 0x9A82, 0x00);
+                }
+            }
+            if (0x33EB..=0x3481).contains(&machine.cpus[0].pc) {
+                break;
+            }
+        }
+
+        assert!(saw_flash_on, "Should have observed big score flashed ON");
+        assert!(saw_flash_off, "Should have observed all 4 rows of big score flashed OFF");
+        assert!(
+            (0x33EB..=0x3481).contains(&machine.cpus[0].pc),
+            "Should be in initial entry loop ($33EB..$3481), got PC=${:04X}",
+            machine.cpus[0].pc
+        );
+
+        // Initial #1 (index 0): starts at $812F ('A' = 0x1A).
+        assert_eq!(machine.bus.read_byte(0, 0x89C6), 0);
+        assert_eq!(machine.bus.read_word(0, 0x89C9), 0x812F);
+
+        // Move joystick RIGHT for 5 frames to change 1st initial from 'A' (0x1A) to 'B' (0x1B)
+        for _ in 0..5 {
+            machine.bus.buttons = INPUT_RIGHT;
+            machine.run_frame();
+        }
+        machine.bus.buttons = 0;
+        machine.run_frame();
+        assert_eq!(machine.bus.read_byte(0, 0x812F) & 0x3F, 0x1B);
+
+        // Press and hold FIRE for 6 frames (realistic human button press) to lock in 1st initial
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_FIRE;
+            machine.run_frame();
+        }
+        machine.bus.buttons = 0;
+        for _ in 0..4 {
+            machine.run_frame();
+        }
+
+        // Must be on the MIDDLE initial (index 1, VRAM $810F) — NOT skipped to index 2!
+        assert_eq!(
+            machine.bus.read_byte(0, 0x89C6),
+            1,
+            "Pressing Fire once must advance to middle initial (1), not skip it!"
+        );
+        assert_eq!(machine.bus.read_word(0, 0x89C9), 0x810F);
+
+        // Move joystick RIGHT to change 2nd (middle) initial from 'A' (0x1A) to 'C' (0x1C)
+        for _ in 0..20 {
+            machine.bus.buttons = INPUT_RIGHT;
+            machine.run_frame();
+            if (machine.bus.read_byte(0, 0x810F) & 0x3F) == 0x1C {
+                break;
+            }
+        }
+        machine.bus.buttons = 0;
+        machine.run_frame();
+        assert_eq!(machine.bus.read_byte(0, 0x810F) & 0x3F, 0x1C);
+
+        // Press and hold FIRE for 6 frames to lock in 2nd (middle) initial
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_FIRE;
+            machine.run_frame();
+        }
+        machine.bus.buttons = 0;
+        for _ in 0..4 {
+            machine.run_frame();
+        }
+
+        // Must now be on the 3rd initial (index 2, VRAM $80EF)!
+        assert_eq!(machine.bus.read_byte(0, 0x89C6), 2);
+        assert_eq!(machine.bus.read_word(0, 0x89C9), 0x80EF);
+
+        // Move joystick RIGHT to change 3rd initial from 'A' (0x1A) to 'D' (0x1D)
+        for _ in 0..35 {
+            machine.bus.buttons = INPUT_RIGHT;
+            machine.run_frame();
+            if (machine.bus.read_byte(0, 0x80EF) & 0x3F) == 0x1D {
+                break;
+            }
+        }
+        machine.bus.buttons = 0;
+        machine.run_frame();
+        assert_eq!(machine.bus.read_byte(0, 0x80EF) & 0x3F, 0x1D);
+
+        // Press and hold FIRE for 6 frames to lock in 3rd initial
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_FIRE;
+            machine.run_frame();
+        }
+        machine.bus.buttons = 0;
+        for _ in 0..10 {
+            machine.run_frame();
+        }
+
+        // Verify all 3 initials ("BCD" = [0x1B, 0x1C, 0x1D]) are stored in 1st place ($89BC..$89BE)
+        assert_eq!(machine.bus.read_byte(0, 0x89C6), 3);
+        assert_eq!(machine.bus.read_byte(0, 0x89BC), 0x1B);
+        assert_eq!(machine.bus.read_byte(0, 0x89BD), 0x1C);
+        assert_eq!(machine.bus.read_byte(0, 0x89BE), 0x1D);
     }
 }
