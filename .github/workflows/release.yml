@@ -1,0 +1,61 @@
+name: Build & Publish Cross-Platform Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: digdug-windows-x86_64.exe
+            bin_path: target/release/digdug.exe
+          - os: macos-latest
+            artifact_name: digdug-macos-arm64
+            bin_path: target/release/digdug
+          - os: ubuntu-latest
+            artifact_name: digdug-linux-x86_64
+            bin_path: target/release/digdug
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux X11 dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev libxi-dev libxcursor-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --bin digdug
+
+      - name: Rename binary for release
+        shell: bash
+        run: cp "${{ matrix.bin_path }}" "${{ matrix.artifact_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+      - name: Attach to GitHub Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_name }}
+          generate_release_notes: true

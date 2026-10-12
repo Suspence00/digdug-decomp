@@ -1,0 +1,399 @@
+use std::sync::Arc;
+
+use crate::decomp::{
+    step_human_cpu0, step_human_cpu1, step_human_cpu2, DecompStats, GameStateSnapshot,
+};
+use crate::rom::DigDugRoms;
+use crate::z80::{Z80, Z80Bus};
+
+pub const INPUT_UP: u8 = 0x01;
+pub const INPUT_RIGHT: u8 = 0x02;
+pub const INPUT_DOWN: u8 = 0x04;
+pub const INPUT_LEFT: u8 = 0x08;
+pub const INPUT_FIRE: u8 = 0x10;
+pub const INPUT_START1: u8 = 0x20;
+pub const INPUT_COIN: u8 = 0x40;
+
+const NAMCO_NMI_DELAY: u8 = 30;
+
+// 3 lives, bonus at 20K & 60K, 1 coin 1 credit
+const DIGDUG_DIP_A: u8 = 0b0100_0000 | 0b0010_0000 | 0b0000_0110;
+// 1 coin 1 credit, Demo Sounds ON, Allow Continue, Easy difficulty
+const DIGDUG_DIP_B: u8 = 0b1100_0000 | 0b0001_0000 | 0b0000_1000 | 0b0000_0011;
+
+#[derive(Clone)]
+pub struct DigDugBus {
+    pub roms: Arc<DigDugRoms>,
+    /// Shared RAM window 0x8000..0x9FFF (8 KB)
+    pub shared_ram: [u8; 0x2000],
+    /// Namco WSG sound registers 0x6800..0x681F (32 nibbles) for 120 Hz Tick 0 (first half-frame) and Tick 1 (second half-frame)
+    pub sound_regs_tick0: [u8; 32],
+    pub sound_regs: [u8; 32],
+    /// High-score non-volatile EAROM (64 bytes)
+    pub earom: [u8; 64],
+    pub earom_addr: usize,
+    pub earom_data: u8,
+
+    /// LS259 misc latch ($6820..$6827): [irq0_en, irq1_en, sound_nmi_dis]
+    pub irq_enable: [bool; 3],
+    pub sub_cpu_reset: bool,
+    pub video_latch: u8,
+    pub game_started: bool,
+
+    /// Namco 06XX / 51XX / 53XX custom I/O state
+    pub namco_command: u8,
+    pub namco_mode: u8,
+    pub namco_nmi_counter: u8,
+    pub namco_credit: u8,
+
+    /// Live controller button bitmask and 3-read history for edge detection
+    pub buttons: u8,
+    pub keymask_d: [u8; 3],
+}
+
+impl DigDugBus {
+    pub fn new(roms: DigDugRoms) -> Self {
+        Self {
+            roms: Arc::new(roms),
+            shared_ram: [0u8; 0x2000],
+            sound_regs_tick0: [0u8; 32],
+            sound_regs: [0u8; 32],
+            earom: [0u8; 64],
+            earom_addr: 0,
+            earom_data: 0,
+            irq_enable: [false; 3],
+            sub_cpu_reset: true,
+            video_latch: 0,
+            game_started: false,
+            namco_command: 0,
+            namco_mode: 0,
+            namco_nmi_counter: 0,
+            namco_credit: 0,
+            buttons: 0,
+            keymask_d: [0; 3],
+        }
+    }
+
+    fn namco_write_dd(&mut self, addr: u16, val: u8) {
+        if (addr & 0x0100) != 0 {
+            self.namco_command = val;
+            if val == 0xA1 {
+                self.namco_mode = 1;
+            }
+            if val == 0xC1 || val == 0xE1 {
+                self.namco_mode = 0;
+            }
+            if val != 0x10 {
+                self.namco_nmi_counter = NAMCO_NMI_DELAY;
+            } else {
+                self.namco_nmi_counter = 0;
+            }
+        }
+    }
+
+    fn namco_read_dd(&mut self, addr: u16) -> u8 {
+        if (addr & 0x0100) != 0 {
+            return self.namco_command;
+        }
+
+        let keymask = self.buttons;
+        if self.namco_command == 0x71 && (addr & 0x0F) == 0 {
+            self.keymask_d[2] = self.keymask_d[1];
+            self.keymask_d[1] = self.keymask_d[0];
+            self.keymask_d[0] = keymask;
+
+            if (self.keymask_d[0] & INPUT_COIN) != 0
+                && (self.keymask_d[1] & INPUT_COIN) == 0
+                && self.namco_credit < 99
+            {
+                self.namco_credit += 1;
+            }
+
+            if (self.keymask_d[0] & INPUT_START1) != 0
+                && (self.keymask_d[1] & INPUT_START1) == 0
+                && self.namco_credit > 0
+            {
+                self.namco_credit -= 1;
+            }
+        }
+
+        // Rising edge prolonged for two $71 reads (2 frames)
+        let keymask_p = (self.keymask_d[0] ^ self.keymask_d[2]) & self.keymask_d[0];
+
+        match self.namco_command {
+            0x71 => {
+                if self.namco_mode != 0 {
+                    match addr & 0x0F {
+                        0 => {
+                            let mut retval = 0u8;
+                            if (keymask & INPUT_COIN) != 0 {
+                                retval |= 0x01;
+                            }
+                            if (keymask & INPUT_START1) != 0 {
+                                retval |= 0x10;
+                            }
+                            !retval
+                        }
+                        1 => {
+                            let mut retval = 0u8;
+                            if (keymask & INPUT_UP) != 0 {
+                                retval |= 0x01;
+                            }
+                            if (keymask & INPUT_DOWN) != 0 {
+                                retval |= 0x04;
+                            }
+                            if (keymask & INPUT_LEFT) != 0 {
+                                retval |= 0x08;
+                            }
+                            if (keymask & INPUT_RIGHT) != 0 {
+                                retval |= 0x02;
+                            }
+                            if (keymask & INPUT_FIRE) != 0 {
+                                retval |= 0x20;
+                            }
+                            if (keymask_p & INPUT_FIRE) != 0 {
+                                retval |= 0x10;
+                            }
+                            !retval
+                        }
+                        2 => 0xFF,
+                        _ => 0xFF,
+                    }
+                } else {
+                    match addr & 0x0F {
+                        0 => 16 * (self.namco_credit / 10) + (self.namco_credit % 10),
+                        1 => {
+                            let mut retval = 0u8;
+                            if (keymask & INPUT_FIRE) != 0 {
+                                retval |= 0x20;
+                            }
+                            if (keymask_p & INPUT_FIRE) != 0 {
+                                retval |= 0x10;
+                            }
+                            if (keymask & INPUT_UP) != 0 {
+                                retval |= 0x0F;
+                            } else if (keymask & INPUT_RIGHT) != 0 {
+                                retval |= 0x0D;
+                            } else if (keymask & INPUT_DOWN) != 0 {
+                                retval |= 0x0B;
+                            } else if (keymask & INPUT_LEFT) != 0 {
+                                retval |= 0x09;
+                            } else {
+                                retval |= 0x07;
+                            }
+                            !retval
+                        }
+                        2 => 0xF8,
+                        _ => 0xFF,
+                    }
+                }
+            }
+            0xD2 => match addr & 0x0F {
+                0 => !DIGDUG_DIP_A,
+                1 => !DIGDUG_DIP_B,
+                _ => 0xFF,
+            },
+            0xB1 => {
+                if (addr & 0x0F) <= 2 {
+                    0x00
+                } else {
+                    0xFF
+                }
+            }
+            _ => 0xFF,
+        }
+    }
+}
+
+impl Z80Bus for DigDugBus {
+    #[inline(always)]
+    fn read_byte(&mut self, cpu_id: usize, addr: u16) -> u8 {
+        if addr < 0x4000 {
+            return match cpu_id {
+                0 => self.roms.cpu0[addr as usize],
+                1 => self.roms.cpu1[addr as usize],
+                _ => self.roms.cpu2[addr as usize],
+            };
+        }
+        if (addr & 0xE000) == 0x8000 {
+            return self.shared_ram[(addr - 0x8000) as usize];
+        }
+        if (addr & 0xFE00) == 0x7000 {
+            return self.namco_read_dd(addr & 0x01FF);
+        }
+        if (addr & 0xFFC0) == 0xB800 {
+            return self.earom[self.earom_addr & 0x3F];
+        }
+        0xFF
+    }
+
+    #[inline(always)]
+    fn write_byte(&mut self, _cpu_id: usize, addr: u16, val: u8) {
+        if (addr & 0xE000) == 0x8000 {
+            if addr == 0x8000 + 985 && (val & 0x7F) == 46 {
+                self.game_started = true;
+            }
+            self.shared_ram[(addr - 0x8000) as usize] = val;
+            return;
+        }
+        if (addr & 0xFFE0) == 0x6800 {
+            self.sound_regs[(addr - 0x6800) as usize] = val & 0x0F;
+            return;
+        }
+        if (addr & 0xFFF8) == 0x6820 {
+            if (addr & 0x0C) == 0x00 {
+                let bit_idx = (addr & 3) as usize;
+                if bit_idx < 3 {
+                    self.irq_enable[bit_idx] = (val & 1) != 0;
+                } else {
+                    self.sub_cpu_reset = (val & 1) == 0;
+                    if self.sub_cpu_reset {
+                        self.namco_command = 0;
+                        self.namco_mode = 0;
+                        self.namco_nmi_counter = 0;
+                    }
+                }
+            }
+            return;
+        }
+        if (addr & 0xFE00) == 0x7000 {
+            self.namco_write_dd(addr & 0x01FF, val);
+            return;
+        }
+        if (addr & 0xFFF8) == 0xA000 {
+            let bit = 1u8 << (addr & 7);
+            if (val & 1) != 0 {
+                self.video_latch |= bit;
+            } else {
+                self.video_latch &= !bit;
+            }
+            return;
+        }
+        if (addr & 0xFFC0) == 0xB800 {
+            self.earom_addr = (addr & 0x3F) as usize;
+            self.earom_data = val;
+            self.earom[self.earom_addr] = val;
+        }
+    }
+}
+
+/// Complete Dig Dug arcade hardware cabinet + hybrid Rust decompilation harness.
+pub struct DigDugMachine {
+    pub cpus: [Z80; 3],
+    pub bus: DigDugBus,
+    pub decomp: DecompStats,
+    pub frame_count: u64,
+    pub verify_lockstep: bool,
+    pub lockstep_mismatches: u64,
+    prev_sub_reset: bool,
+}
+
+impl DigDugMachine {
+    pub fn new(roms: DigDugRoms) -> Self {
+        let mut machine = Self {
+            cpus: [Z80::new(0), Z80::new(1), Z80::new(2)],
+            bus: DigDugBus::new(roms),
+            decomp: DecompStats::new(),
+            frame_count: 0,
+            verify_lockstep: true,
+            lockstep_mismatches: 0,
+            prev_sub_reset: true,
+        };
+        // Fast-forward through the initial 1982 power-on RAM/ROM self-test and crosshatch screen
+        // (~315 frames) so the user lands right at the title/attract screen immediately on launch!
+        for _ in 0..340 {
+            machine.run_frame();
+            if machine.bus.game_started {
+                for _ in 0..10 {
+                    machine.run_frame();
+                }
+                break;
+            }
+        }
+        machine
+    }
+
+    fn step_cpu_with_optional_lockstep(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
+        match cpu_idx {
+            0 => {
+                step_human_cpu0(&mut self.cpus[0], &mut self.bus, roms_ref, &mut self.decomp);
+            }
+            1 => {
+                step_human_cpu1(&mut self.cpus[1], &mut self.bus, roms_ref, &mut self.decomp);
+            }
+            2 => {
+                step_human_cpu2(&mut self.cpus[2], &mut self.bus, roms_ref, &mut self.decomp);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn run_frame(&mut self) {
+        self.frame_count += 1;
+        self.decomp.calls_this_frame = 0;
+
+        // VBlank interrupts (IM 1 -> RST $38) for CPU 0 and CPU 1
+        if self.bus.irq_enable[0] {
+            self.cpus[0].trigger_irq(&mut self.bus);
+        }
+        if !self.bus.sub_cpu_reset && self.bus.irq_enable[1] {
+            self.cpus[1].trigger_irq(&mut self.bus);
+        }
+
+        let roms_ref = Arc::clone(&self.bus.roms);
+        const SUB_STEPS_PER_QUARTER: usize = 300_000 / 60 / 4; // 1250 groups of 4 instructions = 5000 inst/frame
+
+        for quarter in 0..4 {
+            for _ in 0..SUB_STEPS_PER_QUARTER {
+                // Execute 4 steps on CPU 0 (Main)
+                for _ in 0..4 {
+                    self.step_cpu_with_optional_lockstep(0, &roms_ref);
+                    if self.bus.sub_cpu_reset && !self.prev_sub_reset {
+                        self.cpus[1].reset();
+                        self.cpus[2].reset();
+                    }
+                    self.prev_sub_reset = self.bus.sub_cpu_reset;
+                }
+
+                if !self.bus.sub_cpu_reset {
+                    // Execute 4 steps on CPU 1 (Sub/AI)
+                    for _ in 0..4 {
+                        self.step_cpu_with_optional_lockstep(1, &roms_ref);
+                    }
+                    // Execute 4 steps on CPU 2 (Sound)
+                    for _ in 0..4 {
+                        self.step_cpu_with_optional_lockstep(2, &roms_ref);
+                    }
+                }
+
+                // Namco 06XX NMI timer for CPU 0
+                if self.bus.namco_nmi_counter > 0 {
+                    self.bus.namco_nmi_counter -= 1;
+                    if self.bus.namco_nmi_counter == 0 {
+                        self.cpus[0].trigger_nmi(&mut self.bus);
+                        if self.bus.namco_command != 0x10 {
+                            self.bus.namco_nmi_counter = NAMCO_NMI_DELAY;
+                        }
+                    }
+                }
+            }
+
+            // Snapshot the first 120 Hz Sound CPU tick registers before triggering the second half-frame NMI
+            if quarter == 1 {
+                self.bus.sound_regs_tick0 = self.bus.sound_regs;
+            }
+
+            // Sound CPU (CPU 2) periodic NMI at scanlines ~64 and ~192 (120 Hz)
+            if !self.bus.sub_cpu_reset
+                && !self.bus.irq_enable[2]
+                && (quarter == 1 || quarter == 3)
+            {
+                self.cpus[2].trigger_nmi(&mut self.bus);
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> GameStateSnapshot {
+        GameStateSnapshot::from_shared_ram(&self.bus.shared_ram, self.bus.namco_credit)
+    }
+}

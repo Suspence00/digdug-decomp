@@ -1,0 +1,28 @@
+[package]
+name = "digdug-re"
+version = "0.1.0"
+edition = "2021"
+description = "Clean-room Rust decompilation and hardware implementation of Namco's Dig Dug (1982) triple-Z80 arcade system"
+license = "MIT"
+default-run = "digdug"
+
+[[bin]]
+name = "digdug"
+path = "src/main.rs"
+
+[[bin]]
+name = "analyze"
+path = "src/bin/analyze.rs"
+
+[dependencies]
+minifb = "0.27"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

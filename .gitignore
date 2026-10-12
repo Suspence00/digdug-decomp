@@ -1,0 +1,8 @@
+# Rust build artifacts
+/target/
+
+# Copyrighted arcade ROMs and generated disassembly hex dumps
+/roms/
+/disasm/*.asm
+*.zip
+*.7z
