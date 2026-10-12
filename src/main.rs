@@ -283,7 +283,8 @@ fn main() {
             unsafe {
                 use windows_sys::Win32::Foundation::RECT;
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    GetWindowRect, SetWindowPos, SWP_NOMOVE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                    GetSystemMetrics, GetWindowRect, SetWindowPos, SM_CXSCREEN, SWP_NOZORDER,
+                    SWP_SHOWWINDOW,
                 };
                 let hwnd = window.get_window_handle() as windows_sys::Win32::Foundation::HWND;
                 if !hwnd.is_null() {
@@ -297,14 +298,20 @@ fn main() {
                         } else {
                             (cur_w - delta_w).max(ARCADE_WINDOW_WIDTH as i32)
                         };
+                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                        let new_x = if show_telemetry && rect.left + new_w > screen_w - 16 {
+                            (screen_w - new_w - 16).max(16)
+                        } else {
+                            rect.left
+                        };
                         SetWindowPos(
                             hwnd,
                             std::ptr::null_mut(),
-                            0,
-                            0,
+                            new_x,
+                            rect.top,
                             new_w,
                             cur_h,
-                            SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW,
+                            SWP_NOZORDER | SWP_SHOWWINDOW,
                         );
                     }
                 }

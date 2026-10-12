@@ -74,6 +74,33 @@ fn flush_nested_stats(stats: &mut DecompStats) {
     });
 }
 
+/// Live status of one of the 8 hardware monster slots (`$8525..$85A4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonsterStatus {
+    Unused,
+    DefeatedPopped,
+    DefeatedCrushed,
+    Escaped,
+    Walking,
+    Ghosting,
+    BreathingFire,
+    Escaping,
+    Inflating,
+    Popping,
+    Crushed,
+}
+
+/// Live status of one of the 8 hardware boulder/rock slots (`$8465..$84A4`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RockStatus {
+    Unused,
+    Resting,
+    Wobbling,
+    Falling,
+    Shattering,
+    Shattered,
+}
+
 /// High-level strongly-typed snapshot of Dig Dug's shared RAM ($8000..$9FFF),
 /// decoded directly from our reverse-engineered memory map.
 #[derive(Clone, Debug)]
@@ -96,14 +123,35 @@ pub struct GameStateSnapshot {
     pub digdug_x: u8,
     pub digdug_y: u8,
     pub digdug_sprite: u8,
+    pub digdug_dir: u8,
+    pub digdug_moving: bool,
+    pub digdug_digging: bool,
+    pub digdug_stratum: u8,
     pub harpoon_active: bool,
+    pub harpoon_tethered: bool,
     pub harpoon_timer: u8,
+    pub escape_mode: bool,
+    pub spawned_enemies: usize,
     pub active_enemies: usize,
-    pub monster_x: [u8; 6],
-    pub monster_y: [u8; 6],
-    pub monster_inflate: [u8; 6],
+    pub monster_x: [u8; 8],
+    pub monster_y: [u8; 8],
+    pub monster_inflate: [u8; 8],
+    pub monster_deflate_timer: [u8; 8],
+    pub monster_dir: [u8; 8],
+    pub monster_status: [MonsterStatus; 8],
     pub monster_type_mask: u8,
     pub monster_ghost_mask: u8,
+    pub rock_x: [u8; 8],
+    pub rock_y: [u8; 8],
+    pub rock_status: [RockStatus; 8],
+    pub rock_wobble_timer: [u8; 8],
+    pub rocks_intact: usize,
+    pub rocks_dropped: u8,
+    pub veggie_name: &'static str,
+    pub veggie_pts: u32,
+    pub veggie_active: bool,
+    pub veggie_collected: bool,
+    pub veggie_timer_frames: u16,
 }
 
 impl GameStateSnapshot {
@@ -124,6 +172,22 @@ impl GameStateSnapshot {
         score
     }
 
+    pub fn veggie_for_round(round: u8) -> (&'static str, u32) {
+        match round {
+            0 | 1 => ("CARROT", 400),
+            2 => ("TURNIP", 600),
+            3 => ("MUSHROOM", 800),
+            4 | 5 => ("CUCUMBER", 1000),
+            6 | 7 => ("EGGPLANT", 2000),
+            8 | 9 => ("GREEN PEPPER", 3000),
+            10 | 11 => ("TOMATO", 4000),
+            12 | 13 => ("GARLIC", 5000),
+            14 | 15 => ("WATERMELON", 6000),
+            16 | 17 => ("GALAXIAN", 7000),
+            _ => ("PINEAPPLE", 8000),
+        }
+    }
+
     pub fn from_shared_ram(mem: &[u8; 0x2000], credits_bcd: u8) -> Self {
         let r = |addr: u16| -> u8 { mem[(addr - 0x8000) as usize] };
 
@@ -136,49 +200,173 @@ impl GameStateSnapshot {
         let digdug_sprite = r(0x8B80);
         let digdug_x = r(0x98A2);
         let digdug_y = r(0x98A3);
-        let harpoon_active = (r(0x8401) & 0x08) != 0 || (r(0x8403) & 0x04) != 0;
-        let harpoon_timer = r(0x863E);
+        let digdug_dir = r(0x85AE) & 0x07;
+        let digdug_moving = r(0x9A91) != 0;
+        let digdug_digging = digdug_moving && (r(0x8401) & 0x10) == 0;
+        let digdug_stratum = if digdug_y < 0x20 {
+            0
+        } else {
+            (((digdug_y.wrapping_sub(0x08)) >> 6) & 0x03) + 1
+        };
 
-        // Decode the first 6 16-byte monster actor structs ($8525 + i*16)
+        let harpoon_tethered = (r(0x8403) & 0x04) != 0;
+        let harpoon_active = (r(0x8401) & 0x08) != 0 || harpoon_tethered;
+        let harpoon_timer = r(0x863E);
+        let escape_mode = (r(0x87F0) & 0x01) != 0;
+
+        // Decode ALL 8 16-byte monster actor structs ($8525 + i*16, covering $8525..$85A4)
+        // Slots #0..#3 are Pookas; Slots #4..#7 are Fygars.
+        let mut spawned_enemies = 0;
         let mut active_enemies = 0;
-        let mut monster_x = [0u8; 6];
-        let mut monster_y = [0u8; 6];
-        let mut monster_inflate = [0u8; 6];
+        let mut monster_x = [0u8; 8];
+        let mut monster_y = [0u8; 8];
+        let mut monster_inflate = [0u8; 8];
+        let mut monster_deflate_timer = [0u8; 8];
+        let mut monster_dir = [0u8; 8];
+        let mut monster_status = [MonsterStatus::Unused; 8];
         let mut monster_type_mask = 0u8;
         let mut monster_ghost_mask = 0u8;
 
         for i in 0..8 {
             let base = 0x8525 + (i as u16) * 0x10;
             let state0 = r(base);
+            let state1 = r(base + 1);
+            let state2 = r(base + 2);
             let active_byte = r(base + 3);
             let mx = r(base + 4);
             let my = r(base + 5);
+            let spr = r(base + 6);
+            let deflate_timer = r(base + 0x0C);
+            let dir = r(base + 0x0E) & 0x07;
+
+            // Slots 4..7 are always Fygar in hardware ($8565..$85A4), or bit 0 of state0
+            if i >= 4 || (state0 & 0x01) != 0 {
+                monster_type_mask |= 1 << i;
+            }
+            if (state0 & 0x02) != 0 {
+                monster_ghost_mask |= 1 << i;
+            }
+
+            let inflate = if (state0 & 0x20) != 0 {
+                4
+            } else if (state0 & 0x10) != 0 {
+                3
+            } else if (state0 & 0x08) != 0 {
+                2
+            } else if (state0 & 0x04) != 0 {
+                1
+            } else {
+                0
+            };
+
+            let is_crushed = (state0 & 0x80) != 0 && mx > 0;
+            let is_popping = (state0 & 0x20) != 0 && (state2 & 0x01) == 0 && mx > 1 && mx != 0xF1;
             let is_alive = (active_byte & 0x80) == 0 && mx > 1 && my > 1;
-            if is_alive {
+
+            let status = if is_crushed {
+                MonsterStatus::Crushed
+            } else if is_popping {
+                MonsterStatus::Popping
+            } else if is_alive {
+                if inflate > 0 {
+                    MonsterStatus::Inflating
+                } else if (state0 & 0x02) != 0 {
+                    MonsterStatus::Ghosting
+                } else if (i >= 4 || (state0 & 0x01) != 0) && (state1 & 0x40) != 0 {
+                    MonsterStatus::BreathingFire
+                } else if escape_mode {
+                    MonsterStatus::Escaping
+                } else {
+                    MonsterStatus::Walking
+                }
+            } else if mx == 0x01 {
+                MonsterStatus::Escaped
+            } else if mx == 0xF1 || spr == 0x32 || (state0 & 0x20) != 0 {
+                MonsterStatus::DefeatedPopped
+            } else if spr == 0x22 || spr == 0x26 {
+                MonsterStatus::DefeatedCrushed
+            } else {
+                MonsterStatus::Unused
+            };
+
+            let show_coords = is_alive || is_popping || is_crushed;
+            if show_coords {
                 active_enemies += 1;
             }
-            if i < 6 {
-                monster_x[i] = if is_alive { mx } else { 0 };
-                monster_y[i] = if is_alive { my } else { 0 };
-                if (state0 & 0x01) != 0 {
-                    monster_type_mask |= 1 << i;
-                }
-                if (state0 & 0x02) != 0 {
-                    monster_ghost_mask |= 1 << i;
-                }
-                monster_inflate[i] = if (state0 & 0x20) != 0 {
-                    4
-                } else if (state0 & 0x10) != 0 {
-                    3
-                } else if (state0 & 0x08) != 0 {
-                    2
-                } else if (state0 & 0x04) != 0 {
-                    1
-                } else {
-                    0
-                };
+            if status != MonsterStatus::Unused {
+                spawned_enemies += 1;
             }
+
+            monster_x[i] = if show_coords { mx } else { 0 };
+            monster_y[i] = if show_coords { my } else { 0 };
+            monster_inflate[i] = if show_coords { inflate } else { 0 };
+            monster_deflate_timer[i] = if show_coords { deflate_timer } else { 0 };
+            monster_dir[i] = dir;
+            monster_status[i] = status;
         }
+
+        // Decode 8 hardware rock/boulder slots ($8465 + i*8)
+        let mut rock_x = [0u8; 8];
+        let mut rock_y = [0u8; 8];
+        let mut rock_status = [RockStatus::Unused; 8];
+        let mut rock_wobble_timer = [0u8; 8];
+        let mut rocks_intact = 0usize;
+
+        for i in 0..8 {
+            let base = 0x8465 + (i as u16) * 0x08;
+            let rx = r(base);
+            let ry = r(base + 1);
+            let st = r(base + 2);
+            let timer = r(base + 4);
+
+            let r_stat = if st == 0xFF || (rx == 0 && ry != 0x90) {
+                RockStatus::Unused
+            } else if (rx == 0 && ry == 0x90) || (st & 0x10) != 0 {
+                RockStatus::Shattered
+            } else if (st & 0x80) != 0 {
+                RockStatus::Shattering
+            } else if (st & 0x04) != 0 && timer > 0 {
+                RockStatus::Wobbling
+            } else if (st & 0x04) != 0 {
+                RockStatus::Falling
+            } else {
+                RockStatus::Resting
+            };
+
+            if matches!(
+                r_stat,
+                RockStatus::Resting | RockStatus::Wobbling | RockStatus::Falling
+            ) {
+                rocks_intact += 1;
+            }
+            rock_x[i] = rx;
+            rock_y[i] = ry;
+            rock_status[i] = r_stat;
+            rock_wobble_timer[i] = timer;
+        }
+
+        let p1_round = r(0x840D);
+        let p2_round = r(0x840E);
+        let cur_round = if active_player == 2 {
+            p2_round.max(1)
+        } else {
+            p1_round.max(1)
+        };
+        let (veggie_name, veggie_pts) = Self::veggie_for_round(cur_round);
+        let raw_rocks_dropped = if active_player == 2 {
+            r(0x87D8)
+        } else {
+            r(0x87DA)
+        }
+        .max(r(0x87EB));
+        let veggie_active = (r(0x87F0) & 0x20) != 0 && r(0x989E) != 0;
+        let veggie_collected = (r(0x87F0) & 0x40) != 0 || raw_rocks_dropped >= 3 && !veggie_active && r(0x87EF) > 0;
+        let veg_elapsed = u16::from_le_bytes([r(0x87ED), r(0x87EE)]);
+        let veggie_timer_frames = if veggie_active {
+            600u16.saturating_sub(veg_elapsed)
+        } else {
+            0
+        };
 
         Self {
             in_game,
@@ -187,11 +375,15 @@ impl GameStateSnapshot {
             credits_bcd,
             p1_lives: r(0x840A),
             p2_lives: r(0x840B),
-            p1_round: r(0x840D),
-            p2_round: r(0x840E),
-            active_round: r(0x840F),
-            difficulty_step: r(0x8410),
-            stage_layout_idx: r(0x8627),
+            p1_round,
+            p2_round,
+            active_round: cur_round,
+            difficulty_step: cur_round.min(15),
+            stage_layout_idx: if cur_round >= 16 {
+                (cur_round & 0x03) + 12
+            } else {
+                cur_round
+            },
             monster_speed: r(0x87BD),
             bonus_veg_round_clamped: r(0x87E8),
             p1_score: Self::decode_vram_score(mem, 1020),
@@ -199,14 +391,35 @@ impl GameStateSnapshot {
             digdug_x,
             digdug_y,
             digdug_sprite,
+            digdug_dir,
+            digdug_moving,
+            digdug_digging,
+            digdug_stratum,
             harpoon_active,
+            harpoon_tethered,
             harpoon_timer,
+            escape_mode,
+            spawned_enemies,
             active_enemies,
             monster_x,
             monster_y,
             monster_inflate,
+            monster_deflate_timer,
+            monster_dir,
+            monster_status,
             monster_type_mask,
             monster_ghost_mask,
+            rock_x,
+            rock_y,
+            rock_status,
+            rock_wobble_timer,
+            rocks_intact,
+            rocks_dropped: raw_rocks_dropped,
+            veggie_name,
+            veggie_pts,
+            veggie_active,
+            veggie_collected,
+            veggie_timer_frames,
         }
     }
 }
@@ -2484,11 +2697,14 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
 
         // CPU 1 $1DDC: `service_earom_highscore_io`
         (1, 0x1DDC) => {
+            let earom_busy = bus.read_byte(1, 0x9B3D) != 0;
             decomp_cpu1_service_earom_highscore_io(cpu, bus);
-            stats.bcd_score_calls += 1;
-            stats.total_rust_calls += 1;
-            stats.calls_this_frame += 1;
-            stats.last_hooked_name = "cpu1_service_earom_io";
+            if earom_busy {
+                stats.bcd_score_calls += 1;
+                stats.total_rust_calls += 1;
+                stats.calls_this_frame += 1;
+                stats.last_hooked_name = "cpu1_service_earom_io";
+            }
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 80;
             true

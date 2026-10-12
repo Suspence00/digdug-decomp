@@ -1,3 +1,4 @@
+use crate::decomp::{MonsterStatus, RockStatus};
 use crate::hardware::DigDugMachine;
 use crate::rom::DigDugRoms;
 
@@ -6,7 +7,7 @@ pub const ARCADE_HEIGHT: usize = 288;
 pub const ARCADE_SCALE: usize = 3;
 
 pub const ARCADE_WINDOW_WIDTH: usize = 720;
-pub const TELEMETRY_WINDOW_WIDTH: usize = 1160;
+pub const TELEMETRY_WINDOW_WIDTH: usize = 1420;
 pub const WINDOW_WIDTH: usize = TELEMETRY_WINDOW_WIDTH;
 pub const WINDOW_HEIGHT: usize = 912;
 
@@ -51,22 +52,24 @@ pub const TILEADDR: [[u16; 28]; 36] = [
     [61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34],
 ];
 
-// Sleek Modern Minimalist Warm/Neutral Slate Palette
+// Sleek Modern Minimalist Warm/Neutral Slate Palette (High-Contrast Readability)
 const BG_OUTER: u32 = 0x141417;
-const CARD_TOP: u32 = 0x222227;
-const CARD_BOT: u32 = 0x1A1A1F;
-const CARD_BORDER: u32 = 0x34343D;
-const CARD_HIGHLIGHT: u32 = 0x3E3E48;
+const CARD_TOP: u32 = 0x232329;
+const CARD_BOT: u32 = 0x1A1A20;
+const CARD_BORDER: u32 = 0x383842;
+const CARD_HIGHLIGHT: u32 = 0x484854;
 
-const TEXT_PRIMARY: u32 = 0xF4F4F5;
-const TEXT_SECONDARY: u32 = 0xA1A1AA;
-const TEXT_MUTED: u32 = 0x71717A;
+const TEXT_PRIMARY: u32 = 0xFAFAFC;
+const TEXT_SECONDARY: u32 = 0xD4D4DC;
+const TEXT_MUTED: u32 = 0x9E9EAE;
 
-const BADGE_EMERALD_BG: u32 = 0x143327;
-const BADGE_EMERALD_FG: u32 = 0x34D399;
+const BADGE_EMERALD_BG: u32 = 0x143629;
+const BADGE_EMERALD_FG: u32 = 0x4ADE80;
+const BADGE_AMBER_BG: u32 = 0x3B2A14;
 const BADGE_AMBER_FG: u32 = 0xFBBF24;
-const BADGE_SLATE_BG: u32 = 0x2D2D35;
-const BADGE_SLATE_FG: u32 = 0xE4E4E7;
+const BADGE_SLATE_BG: u32 = 0x2E2E38;
+const BADGE_SLATE_FG: u32 = 0xF4F4F6;
+const BADGE_ROSE_BG: u32 = 0x3F1A24;
 const BADGE_ROSE_FG: u32 = 0xFB7185;
 
 /// Renders the 224x288 upright Dig Dug arcade framebuffer from VRAM + Playfield PROM + 64 Sprites.
@@ -236,8 +239,18 @@ pub fn render_arcade_frame(
     }
 }
 
+fn dir_name(dir: u8) -> &'static str {
+    match dir & 0x07 {
+        0 => "UP",
+        2 => "RIGHT",
+        4 => "DOWN",
+        6 => "LEFT",
+        _ => "IDLE",
+    }
+}
+
 /// Renders either the Clean Arcade Window (`720x912`, `show_telemetry = false`)
-/// or the Expanded Hardware & Game State Window (`1160x912`, `show_telemetry = true`).
+/// or the Expanded Hardware & Game Guide Window (`1480x912`, `show_telemetry = true`).
 pub fn render_workbench_window(
     machine: &DigDugMachine,
     arcade_fb: &[u32; ARCADE_WIDTH * ARCADE_HEIGHT],
@@ -253,35 +266,34 @@ pub fn render_workbench_window(
     // Fill active framebuffer slice
     window_fb[..fb_w * WINDOW_HEIGHT].fill(BG_OUTER);
 
-    // 1. Sleek Top Control Instruction Bar (x: 20..700, y: 6..29)
-    draw_card(window_fb, fb_w, 20, 6, 680, 23);
+    // 1. Sleek Top Control Instruction Bar (x: 20..700, y: 4..30)
+    draw_card(window_fb, fb_w, 20, 4, 680, 26);
     let controls_top: [(&str, &str, usize); 6] = [
-        ("5/C", "COIN", 28),
-        ("1/ENT", "START", 118),
-        ("WASD", "MOVE", 224),
-        ("SPC/Z", "PUMP", 320),
-        ("R", "RESET", 424),
-        ("TAB", "INFO", 512),
+        ("5/C", "COIN", 26),
+        ("1", "START", 122),
+        ("WASD", "MOVE", 210),
+        ("SPC", "PUMP", 316),
+        ("R", "RESET", 412),
+        ("TAB", "GUIDE", 500),
     ];
     for &(key_txt, label_txt, bx) in &controls_top {
-        draw_badge(
+        let bw = draw_badge(
             window_fb,
             fb_w,
             bx,
-            10,
+            8,
             key_txt,
             BADGE_SLATE_BG,
             BADGE_AMBER_FG,
         );
-        let label_x = bx + key_txt.len() * 6 + 16;
-        draw_text(window_fb, fb_w, label_x, 14, label_txt, TEXT_PRIMARY, 1);
+        draw_text(window_fb, fb_w, bx + bw + 6, 11, label_txt, TEXT_PRIMARY);
     }
     let snap = machine.snapshot();
     draw_badge(
         window_fb,
         fb_w,
-        604,
-        10,
+        610,
+        8,
         &format!("CRED {:02X}", snap.credits_bcd),
         BADGE_EMERALD_BG,
         BADGE_EMERALD_FG,
@@ -322,379 +334,462 @@ pub fn render_workbench_window(
         return fb_w;
     }
 
-    // 3. Right-side Sleek Modern Minimalist Hardware & Game State Panel
-    let px = 716;
-    let pw = 420;
+    // 3. Right-side Sleek Modern Minimalist Live Gameplay Inspector
+    let px = 714;
+    let pw = 692;
 
-    // --- CARD 1: Header & Arcade Cabinet Status ---
-    draw_card(window_fb, fb_w, px, 6, pw, 126);
+    // =========================================================================
+    // CARD 1: PLAYER, ROUND & BONUS STATUS (y: 4..216)
+    // =========================================================================
+    draw_card(window_fb, fb_w, px, 4, pw, 212);
+    draw_title_5x7(
+        window_fb,
+        fb_w,
+        px + 18,
+        14,
+        "DIG DUG - LIVE GAMEPLAY INSPECTOR",
+        TEXT_PRIMARY,
+        2,
+    );
+
+    let (mode_label, mode_bg, mode_fg) = if snap.in_game {
+        ("ACTIVE GAMEPLAY", BADGE_EMERALD_BG, BADGE_EMERALD_FG)
+    } else if snap.attract_demo {
+        ("ATTRACT DEMO", BADGE_AMBER_BG, BADGE_AMBER_FG)
+    } else {
+        ("TITLE / STANDBY", BADGE_SLATE_BG, BADGE_SLATE_FG)
+    };
+    let mut bx = px + 18;
+    bx += draw_badge(window_fb, fb_w, bx, 38, mode_label, mode_bg, mode_fg) + 10;
+
+    let shown_round = snap.p1_round.max(1);
+    let map_layout = if snap.stage_layout_idx > 0 {
+        snap.stage_layout_idx
+    } else if shown_round <= 15 {
+        shown_round
+    } else {
+        12 + ((shown_round - 16) & 3)
+    };
+    bx += draw_badge(
+        window_fb,
+        fb_w,
+        bx,
+        38,
+        &format!("ROUND {} (MAP #{}/15)", shown_round, map_layout),
+        BADGE_SLATE_BG,
+        BADGE_AMBER_FG,
+    ) + 10;
+    bx += draw_badge(
+        window_fb,
+        fb_w,
+        bx,
+        38,
+        &format!("LIVES: {}", snap.p1_lives),
+        BADGE_SLATE_BG,
+        TEXT_PRIMARY,
+    ) + 10;
+    draw_badge(
+        window_fb,
+        fb_w,
+        bx,
+        38,
+        &format!("1UP: {:06}  HI: {:06}", snap.p1_score, snap.high_score),
+        BADGE_SLATE_BG,
+        TEXT_PRIMARY,
+    );
+
+    draw_hline(window_fb, fb_w, px + 18, 64, pw - 36, CARD_BORDER);
+
+    // Player Position, Depth Stratum & Action
+    let (layer_label, layer_pts) = match snap.digdug_stratum {
+        0 => ("SURFACE", 200),
+        1 => ("LAYER 1", 200),
+        2 => ("LAYER 2", 300),
+        3 => ("LAYER 3", 400),
+        _ => ("LAYER 4", 500),
+    };
+    let player_action = if snap.harpoon_tethered {
+        "PUMPING ENEMY!"
+    } else if snap.harpoon_active {
+        "FIRING HARPOON"
+    } else if snap.digdug_digging {
+        "DIGGING DIRT"
+    } else if snap.digdug_moving {
+        "WALKING TUNNEL"
+    } else {
+        "IDLE / STOPPED"
+    };
     draw_text(
         window_fb,
         fb_w,
-        px + 16,
-        20,
-        "DIG DUG (NAMCO, 1982)",
+        px + 18,
+        76,
+        &format!(
+            "DIG DUG     X={:3} Y={:3}   {} ({} PT POP)   {}",
+            snap.digdug_x, snap.digdug_y, layer_label, layer_pts, player_action
+        ),
+        TEXT_PRIMARY,
+    );
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 18,
+        96,
+        "Pop Points: Surface/L1 = 200 | L2 = 300 | L3 = 400 | L4 = 500  (Horiz Fygar = 2x)",
+        TEXT_SECONDARY,
+    );
+
+    // Monster Speed + Visual Bar
+    let spd_pct = (snap.monster_speed as usize * 100) / 255;
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 18,
+        124,
+        &format!("ENEMY PACE  {:3}/255 ({:2}%)", snap.monster_speed, spd_pct),
+        TEXT_PRIMARY,
+    );
+    let bar_x = px + 236;
+    let bar_w = 180;
+    draw_rect(window_fb, fb_w, bar_x, 125, bar_w, 11, BADGE_SLATE_BG);
+    let fill_w = (snap.monster_speed as usize * bar_w) / 255;
+    let bar_col = if snap.escape_mode || snap.monster_speed >= 220 {
+        BADGE_ROSE_FG
+    } else if snap.monster_speed > 165 {
+        BADGE_AMBER_FG
+    } else {
+        BADGE_EMERALD_FG
+    };
+    draw_rect(window_fb, fb_w, bar_x, 125, fill_w, 11, bar_col);
+    let pace_txt = if snap.escape_mode {
+        "ESCAPE BOOST! (LAST ENEMY FLEEING)"
+    } else {
+        "NORMAL ROUND SPEED"
+    };
+    draw_text(window_fb, fb_w, bar_x + bar_w + 14, 124, pace_txt, bar_col);
+
+    // Bonus Veggie & Boulders Dropped
+    let veg_status = if snap.veggie_active {
+        format!(
+            "ACTIVE IN CENTER! ({:.1}s LEFT)",
+            snap.veggie_timer_frames as f32 / 60.0
+        )
+    } else if snap.veggie_collected {
+        format!("COLLECTED! (+{} PTS)", snap.veggie_pts)
+    } else {
+        format!(
+            "{}/2 ROCKS DROPPED (Drop 2 to spawn)",
+            snap.rocks_dropped.min(2)
+        )
+    };
+    let veg_col = if snap.veggie_active || snap.veggie_collected {
+        BADGE_EMERALD_FG
+    } else {
+        BADGE_AMBER_FG
+    };
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 18,
+        154,
+        &format!(
+            "VEGGIE      {} ({} PTS)  ->  {}",
+            snap.veggie_name, snap.veggie_pts, veg_status
+        ),
+        veg_col,
+    );
+
+    // Stage Map & Progression Note
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 18,
+        184,
+        &format!(
+            "STAGE MAP   Map #{:2} of 15  (Rounds 1-15 unique; Rounds 16+ cycle Maps #12-#15)",
+            map_layout
+        ),
+        TEXT_SECONDARY,
+    );
+
+    // =========================================================================
+    // CARD 2: LIVE ENEMIES (8 SLOTS: #0-#3 POOKA, #4-#7 FYGAR) (y: 226..590)
+    // =========================================================================
+    draw_card(window_fb, fb_w, px, 226, pw, 364);
+    draw_title_5x7(
+        window_fb,
+        fb_w,
+        px + 18,
+        238,
+        "LIVE ENEMIES",
         TEXT_PRIMARY,
         2,
     );
     draw_text(
         window_fb,
         fb_w,
-        px + 16,
-        42,
-        "TRIPLE-Z80 ARCADE HARDWARE & MEMORY INSPECTOR",
+        px + 176,
+        239,
+        "8 Hardware Slots (#0-#3 Pooka, #4-#7 Fygar)",
         TEXT_SECONDARY,
-        1,
     );
-
-    draw_text(window_fb, fb_w, px + 16, 70, "GAME MODE", TEXT_MUTED, 1);
-    let mode_label = if snap.in_game {
-        "ACTIVE GAMEPLAY"
-    } else if snap.attract_demo {
-        "ATTRACT DEMO"
+    let alive_badge = if snap.escape_mode && snap.active_enemies > 0 {
+        format!("ALIVE: {}/{} (FLEEING!)", snap.active_enemies, snap.spawned_enemies)
     } else {
-        "TITLE / STANDBY"
+        format!("ALIVE: {} / {}", snap.active_enemies, snap.spawned_enemies)
     };
-    draw_badge(
-        window_fb,
-        fb_w,
-        px + 112,
-        66,
-        mode_label,
-        BADGE_EMERALD_BG,
-        BADGE_EMERALD_FG,
-    );
-
-    draw_text(window_fb, fb_w, px + 16, 98, "ROUND 256", TEXT_MUTED, 1);
-    draw_badge(
-        window_fb,
-        fb_w,
-        px + 112,
-        94,
-        "KILL-SCREEN FIX ACTIVE (-> RND 156)",
-        BADGE_SLATE_BG,
-        BADGE_SLATE_FG,
-    );
-
-    // --- CARD 2: Tri-CPU State & Namco Custom Silicon ---
-    draw_card(window_fb, fb_w, px, 144, pw, 134);
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        156,
-        "TRI-CPU STATE & NAMCO WSG AUDIO",
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_hline(window_fb, fb_w, px + 16, 170, pw - 32, CARD_BORDER);
-
-    let c0 = &machine.cpus[0];
-    let c1 = &machine.cpus[1];
-    let c2 = &machine.cpus[2];
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        180,
-        &format!(
-            "CPU0 MAIN : PC ${:04X}  SP ${:04X}  AF ${:04X}  IRQ:{}",
-            c0.pc,
-            c0.sp,
-            c0.af(),
-            if machine.bus.irq_enable[0] { "ON " } else { "OFF" }
-        ),
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        198,
-        &format!(
-            "CPU1 AI   : PC ${:04X}  SP ${:04X}  AF ${:04X}  {}",
-            c1.pc,
-            c1.sp,
-            c1.af(),
-            if machine.bus.sub_cpu_reset {
-                "RST"
-            } else if machine.bus.irq_enable[1] {
-                "RUN"
-            } else {
-                "IDL"
-            }
-        ),
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        216,
-        &format!(
-            "CPU2 SND  : PC ${:04X}  SP ${:04X}  AF ${:04X}  NMI:{}",
-            c2.pc,
-            c2.sp,
-            c2.af(),
-            if !machine.bus.irq_enable[2] { "ON " } else { "OFF" }
-        ),
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        238,
-        &format!(
-            "06XX CMD: ${:02X}   51XX MODE: {}   VID LATCH: ${:02X}",
-            machine.bus.namco_command, machine.bus.namco_mode, machine.bus.video_latch
-        ),
-        TEXT_SECONDARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        256,
-        &format!(
-            "WSG CH0-2 VOL: [{:X}, {:X}, {:X}]   FRAME: #{}",
-            machine.bus.sound_regs[0x15] & 0xF,
-            machine.bus.sound_regs[0x1A] & 0xF,
-            machine.bus.sound_regs[0x1F] & 0xF,
-            machine.frame_count
-        ),
-        TEXT_SECONDARY,
-        1,
-    );
-
-    // --- CARD 3: Live Reverse-Engineered Shared RAM ($8000-$9FFF) ---
-    draw_card(window_fb, fb_w, px, 290, pw, 224);
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        302,
-        "SHARED RAM TELEMETRY ($8000-$9FFF)",
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_hline(window_fb, fb_w, px + 16, 316, pw - 32, CARD_BORDER);
-
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        326,
-        &format!(
-            "CREDITS: {:02X}   P1 ROUND ($840D): {:3}   LIVES ($840A): {}",
-            snap.credits_bcd, snap.p1_round, snap.p1_lives
-        ),
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        344,
-        &format!(
-            "DIG DUG ($98A2): X={:3} Y={:3}   1UP: {:06}  HI: {:06}",
-            snap.digdug_x, snap.digdug_y, snap.p1_score, snap.high_score
-        ),
-        TEXT_SECONDARY,
-        1,
-    );
-
-    // Monster Speed $87BD + Progress Bar
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        366,
-        &format!("MONSTER SPEED ($87BD): {:3}/255", snap.monster_speed),
-        TEXT_PRIMARY,
-        1,
-    );
-    let bar_x = px + 240;
-    let bar_w = 160;
-    draw_rect(window_fb, fb_w, bar_x, 366, bar_w, 8, BADGE_SLATE_BG);
-    let fill_w = (snap.monster_speed as usize * bar_w) / 255;
-    let bar_col = if snap.monster_speed == 255 {
+    let alive_bg = if snap.escape_mode && snap.active_enemies > 0 {
+        BADGE_ROSE_BG
+    } else {
+        BADGE_EMERALD_BG
+    };
+    let alive_fg = if snap.escape_mode && snap.active_enemies > 0 {
         BADGE_ROSE_FG
-    } else if snap.monster_speed > 180 {
-        BADGE_AMBER_FG
     } else {
         BADGE_EMERALD_FG
     };
-    draw_rect(window_fb, fb_w, bar_x, 366, fill_w, 8, bar_col);
+    let alive_badge_w = alive_badge.len() * 8 + 14;
+    draw_badge(
+        window_fb,
+        fb_w,
+        px + pw - alive_badge_w - 18,
+        236,
+        &alive_badge,
+        alive_bg,
+        alive_fg,
+    );
 
-    // Monster table ($8525 + i*16)
+    draw_hline(window_fb, fb_w, px + 18, 264, pw - 36, CARD_BORDER);
+
     draw_text(
         window_fb,
         fb_w,
-        px + 16,
-        388,
-        "SLOT  TYPE    POS ($8529/$852A)   STATE / PUMP",
+        px + 18,
+        274,
+        "SLOT   ENEMY     POS (X,Y)       PUMP (0-4)     LIVE AI STATUS",
         TEXT_MUTED,
-        1,
     );
-    for m in 0..6 {
-        let my = 404 + m * 16;
-        let mtype = if (snap.monster_type_mask & (1 << m)) != 0 {
-            "FYGAR"
-        } else {
-            "POOKA"
-        };
+
+    for m in 0..8 {
+        let my = 300 + m * 34;
+        let is_fygar = (snap.monster_type_mask & (1 << m)) != 0;
+        let mtype = if is_fygar { "FYGAR" } else { "POOKA" };
         let mx_pos = snap.monster_x[m];
         let my_pos = snap.monster_y[m];
         let inflate = snap.monster_inflate[m] & 0x07;
-        let is_ghost = (snap.monster_ghost_mask & (1 << m)) != 0;
-        let active = mx_pos != 0 && my_pos != 0;
-        let col = if active && is_ghost {
-            BADGE_AMBER_FG
-        } else if active {
-            TEXT_PRIMARY
-        } else {
-            TEXT_MUTED
-        };
-        let state_str = if is_ghost && active {
-            "GHOSTING ".to_string()
-        } else {
-            format!("STAGE {}/4", inflate)
-        };
-        draw_text(
-            window_fb,
-            fb_w,
-            px + 16,
-            my,
-            &format!(
-                " #{m}   {mtype}   X={:3}  Y={:3}        {}",
-                mx_pos, my_pos, state_str
-            ),
-            col,
-            1,
+        let def_t = snap.monster_deflate_timer[m];
+        let dir_str = dir_name(snap.monster_dir[m]);
+        let status = snap.monster_status[m];
+
+        let active = matches!(
+            status,
+            MonsterStatus::Walking
+                | MonsterStatus::Ghosting
+                | MonsterStatus::BreathingFire
+                | MonsterStatus::Escaping
+                | MonsterStatus::Inflating
+                | MonsterStatus::Popping
+                | MonsterStatus::Crushed
         );
-    }
 
-    // --- CARD 4: Subroutine Execution Telemetry ---
-    draw_card(window_fb, fb_w, px, 526, pw, 204);
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        538,
-        &format!(
-            "SUBROUTINE TELEMETRY ({} TOTAL CALLS)",
-            machine.decomp.total_rust_calls
-        ),
-        TEXT_PRIMARY,
-        1,
-    );
-    draw_hline(window_fb, fb_w, px + 16, 552, pw - 32, CARD_BORDER);
+        let (row_col, status_text) = match status {
+            MonsterStatus::Walking => (TEXT_PRIMARY, format!("WALKING {}", dir_str)),
+            MonsterStatus::Ghosting => (BADGE_AMBER_FG, "GHOSTING THROUGH DIRT".to_string()),
+            MonsterStatus::BreathingFire => (BADGE_ROSE_FG, "BREATHING FIRE!".to_string()),
+            MonsterStatus::Escaping => (BADGE_ROSE_FG, "ESCAPING TO TOP-LEFT!".to_string()),
+            MonsterStatus::Inflating => (
+                BADGE_EMERALD_FG,
+                format!(
+                    "PUMPED {}/4 (DEFLATES {:.1}s)",
+                    inflate,
+                    def_t as f32 / 60.0
+                ),
+            ),
+            MonsterStatus::Popping => (BADGE_EMERALD_FG, "POPPING! (+PTS)".to_string()),
+            MonsterStatus::Crushed => (BADGE_ROSE_FG, "CRUSHED BY BOULDER!".to_string()),
+            MonsterStatus::DefeatedPopped => (TEXT_MUTED, "DEFEATED (POPPED)".to_string()),
+            MonsterStatus::DefeatedCrushed => (TEXT_MUTED, "DEFEATED (CRUSHED)".to_string()),
+            MonsterStatus::Escaped => (TEXT_MUTED, "ESCAPED STAGE".to_string()),
+            MonsterStatus::Unused => (TEXT_MUTED, "--- (UNUSED SLOT)".to_string()),
+        };
 
-    let hooks: [(&str, u64); 7] = [
-        ("CPU0/1/2 $0008/$10 rst_table_add", machine.decomp.rst_table_calls),
-        (
-            "CPU0 $0FF0..$2894 harpoon_inflate_pop",
-            machine.decomp.harpoon_pump_calls,
-        ),
-        (
-            "CPU0 $1C10..$290C rock_crush_excavate",
-            machine.decomp.rock_physics_calls,
-        ),
-        (
-            "CPU0 $243F..CPU1 $15D3 ghost_dig_ai",
-            machine.decomp.ghost_dig_ai_calls + machine.decomp.monster_speed_calls,
-        ),
-        (
-            "CPU0 $0C51..$1845 bcd_score_1up_hud",
-            machine.decomp.bcd_score_calls + machine.decomp.hud_lives_calls,
-        ),
-        (
-            "CPU0 $177C..$19F7 round_and_grid_init",
-            machine.decomp.round_advance_calls + machine.decomp.dirt_init_calls,
-        ),
-        ("CPU2 $0018 namco_wsg_sound_engine", machine.decomp.sound_engine_calls),
-    ];
-
-    for (i, (label, count)) in hooks.iter().enumerate() {
-        let hy = 564 + i * 19;
-        let active_col = if *count > 0 {
+        let type_col = if !active {
+            TEXT_MUTED
+        } else if is_fygar {
             BADGE_EMERALD_FG
         } else {
-            TEXT_SECONDARY
+            BADGE_AMBER_FG
         };
-        draw_text(window_fb, fb_w, px + 16, hy, label, active_col, 1);
+
+        draw_text(window_fb, fb_w, px + 18, my, &format!("#{m}"), row_col);
+        draw_text(window_fb, fb_w, px + 74, my, mtype, type_col);
+
+        if active {
+            draw_text(
+                window_fb,
+                fb_w,
+                px + 154,
+                my,
+                &format!("X={:3} Y={:3}", mx_pos, my_pos),
+                row_col,
+            );
+            draw_pump_meter(window_fb, fb_w, px + 282, my + 1, inflate);
+            draw_text(
+                window_fb,
+                fb_w,
+                px + 338,
+                my,
+                &format!("{}/4", inflate),
+                if inflate > 0 { BADGE_EMERALD_FG } else { TEXT_SECONDARY },
+            );
+        } else {
+            draw_text(window_fb, fb_w, px + 154, my, "  ---   ---", TEXT_MUTED);
+            draw_text(window_fb, fb_w, px + 300, my, "---", TEXT_MUTED);
+        }
+
+        draw_text(window_fb, fb_w, px + 394, my, &status_text, row_col);
+
+        if m < 7 {
+            draw_hline(window_fb, fb_w, px + 18, my + 21, pw - 36, 0x1E2028);
+        }
+    }
+
+    // =========================================================================
+    // CARD 3: STAGE BOULDERS / ROCKS (y: 600..802)
+    // =========================================================================
+    draw_card(window_fb, fb_w, px, 600, pw, 202);
+    draw_title_5x7(
+        window_fb,
+        fb_w,
+        px + 18,
+        612,
+        "STAGE BOULDERS",
+        TEXT_PRIMARY,
+        2,
+    );
+
+    let mut stage_rocks: Vec<(usize, u8, u8, RockStatus, u8)> = Vec::new();
+    for r_idx in 0..8 {
+        let st = snap.rock_status[r_idx];
+        if st != RockStatus::Unused {
+            stage_rocks.push((
+                stage_rocks.len() + 1,
+                snap.rock_x[r_idx],
+                snap.rock_y[r_idx],
+                st,
+                snap.rock_wobble_timer[r_idx],
+            ));
+        }
+    }
+    let rock_badge = format!("INTACT: {} / {}", snap.rocks_intact, stage_rocks.len());
+    let rock_badge_w = rock_badge.len() * 8 + 14;
+    draw_badge(
+        window_fb,
+        fb_w,
+        px + pw - rock_badge_w - 18,
+        610,
+        &rock_badge,
+        BADGE_SLATE_BG,
+        TEXT_PRIMARY,
+    );
+
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 204,
+        613,
+        "Crush: 1=1k | 2=2.5k | 3=4k | 4=6k pts",
+        TEXT_SECONDARY,
+    );
+    draw_hline(window_fb, fb_w, px + 18, 638, pw - 36, CARD_BORDER);
+
+    for (idx, (num, rx, ry, r_stat, timer)) in stage_rocks.iter().take(5).enumerate() {
+        let ry_row = 650 + idx * 28;
+        let (r_col, r_desc) = match r_stat {
+            RockStatus::Resting => (TEXT_PRIMARY, "INTACT (RESTING IN DIRT)".to_string()),
+            RockStatus::Wobbling => (
+                BADGE_AMBER_FG,
+                format!("WOBBLING! (DROPS IN {} FRAMES)", timer),
+            ),
+            RockStatus::Falling => (BADGE_ROSE_FG, "FALLING DOWN TUNNEL!".to_string()),
+            RockStatus::Shattering => (BADGE_AMBER_FG, "CRUMBLING AT BOTTOM".to_string()),
+            RockStatus::Shattered => (TEXT_MUTED, "DROPPED & SHATTERED".to_string()),
+            RockStatus::Unused => (TEXT_MUTED, "---".to_string()),
+        };
         draw_text(
             window_fb,
             fb_w,
-            px + 320,
-            hy,
-            &format!("{:8}", count),
-            TEXT_PRIMARY,
-            1,
+            px + 18,
+            ry_row,
+            &format!("BOULDER #{}", num),
+            r_col,
         );
+        if *r_stat == RockStatus::Shattered {
+            draw_text(window_fb, fb_w, px + 154, ry_row, "  ---   ---", TEXT_MUTED);
+        } else {
+            draw_text(
+                window_fb,
+                fb_w,
+                px + 154,
+                ry_row,
+                &format!("X={:3} Y={:3}", rx, ry),
+                r_col,
+            );
+        }
+        draw_text(window_fb, fb_w, px + 300, ry_row, &r_desc, r_col);
     }
+
+    // =========================================================================
+    // CARD 4: CONTROLS (y: 812..904)
+    // =========================================================================
+    draw_card(window_fb, fb_w, px, 812, pw, 92);
     draw_text(
         window_fb,
         fb_w,
-        px + 16,
-        706,
-        &format!(
-            "CALLS/FRAME: {:4}   LAST: {}",
-            machine.decomp.calls_this_frame, machine.decomp.last_hooked_name
-        ),
-        TEXT_MUTED,
-        1,
+        px + 18,
+        822,
+        "CONTROLS",
+        TEXT_PRIMARY,
     );
-
-    // --- CARD 5: Interactive Controls ---
-    draw_card(window_fb, fb_w, px, 742, pw, 162);
-    draw_text(window_fb, fb_w, px + 16, 754, "CONTROLS", TEXT_PRIMARY, 1);
-    draw_hline(window_fb, fb_w, px + 16, 768, pw - 32, CARD_BORDER);
+    draw_hline(window_fb, fb_w, px + 18, 840, pw - 36, CARD_BORDER);
 
     draw_text(
         window_fb,
         fb_w,
-        px + 16,
-        784,
-        "[5 / C] INSERT COIN          [1 / ENTER] 1P START",
+        px + 18,
+        850,
+        "[5/C] Coin     [1/Enter] Start 1P     [WASD/Arrows] Move     [Space/Z] Pump Harpoon",
+        TEXT_PRIMARY,
+    );
+    draw_text(
+        window_fb,
+        fb_w,
+        px + 18,
+        872,
+        "[Tab] Toggle Sidebar                  [R] Warm Reset         [Esc] Quit Game",
         TEXT_SECONDARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        808,
-        "[ARROWS / WASD] MOVE         [SPACE / Z] PUMP HARPOON",
-        TEXT_SECONDARY,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        832,
-        "[TAB] TOGGLE INFO PANEL      [R] WARM RESET CABINET",
-        BADGE_AMBER_FG,
-        1,
-    );
-    draw_text(
-        window_fb,
-        fb_w,
-        px + 16,
-        856,
-        "[ESC] QUIT GAME",
-        TEXT_MUTED,
-        1,
     );
 
     fb_w
+}
+
+fn draw_pump_meter(fb: &mut [u32], fb_w: usize, x: usize, y: usize, inflate: u8) {
+    for step in 0..4u8 {
+        let bx = x + (step as usize) * 12;
+        let lit = inflate > step;
+        let col = if !lit {
+            BADGE_SLATE_BG
+        } else if inflate >= 4 {
+            BADGE_ROSE_FG
+        } else if inflate == 3 {
+            BADGE_AMBER_FG
+        } else {
+            BADGE_EMERALD_FG
+        };
+        draw_rect(fb, fb_w, bx, y, 10, 10, col);
+        draw_hline(fb, fb_w, bx, y, 10, CARD_BORDER);
+        draw_hline(fb, fb_w, bx, y + 9, 10, CARD_BORDER);
+    }
 }
 
 fn draw_card(fb: &mut [u32], fb_w: usize, x: usize, y: usize, w: usize, h: usize) {
@@ -760,16 +855,56 @@ fn draw_hline(fb: &mut [u32], fb_w: usize, x: usize, y: usize, w: usize, color: 
     }
 }
 
-fn draw_badge(fb: &mut [u32], fb_w: usize, x: usize, y: usize, text: &str, bg: u32, fg: u32) {
-    let w = text.len() * 6 + 12;
-    let h = 15;
+fn draw_badge(
+    fb: &mut [u32],
+    fb_w: usize,
+    x: usize,
+    y: usize,
+    text: &str,
+    bg: u32,
+    fg: u32,
+) -> usize {
+    let w = text.len() * 8 + 14;
+    let h = 18;
     draw_rect(fb, fb_w, x, y, w, h, bg);
     draw_hline(fb, fb_w, x, y, w, CARD_BORDER);
     draw_hline(fb, fb_w, x, y + h - 1, w, CARD_BORDER);
-    draw_text(fb, fb_w, x + 6, y + 4, text, fg, 1);
+    draw_text(fb, fb_w, x + 7, y + 3, text, fg);
+    w
 }
 
-fn draw_text(fb: &mut [u32], fb_w: usize, x: usize, y: usize, text: &str, color: u32, scale: usize) {
+/// Draws large crisp 8x12 mixed-case bitmap text (8px wide advance, 12px tall, 2px bold stems).
+fn draw_text(fb: &mut [u32], fb_w: usize, x: usize, y: usize, text: &str, color: u32) {
+    let mut cx = x;
+    for ch in text.chars() {
+        let glyph = glyph_8x12(ch);
+        for (row_idx, &row_bits) in glyph.iter().enumerate() {
+            let py = y + row_idx;
+            if py >= WINDOW_HEIGHT {
+                break;
+            }
+            for col_idx in 0..7 {
+                if (row_bits & (1 << (7 - col_idx))) != 0 {
+                    let px = cx + col_idx;
+                    if px < fb_w {
+                        fb[py * fb_w + px] = color;
+                    }
+                }
+            }
+        }
+        cx += 8;
+    }
+}
+
+fn draw_title_5x7(
+    fb: &mut [u32],
+    fb_w: usize,
+    x: usize,
+    y: usize,
+    text: &str,
+    color: u32,
+    scale: usize,
+) {
     let mut cx = x;
     for ch in text.chars() {
         let glyph = glyph_5x7(ch);
@@ -792,7 +927,106 @@ fn draw_text(fb: &mut [u32], fb_w: usize, x: usize, y: usize, text: &str, color:
     }
 }
 
-/// Clean 5x7 uppercase/symbol bitmap font for the Sleek Modern Minimalist UI panel.
+/// High-legibility 8x12 bold mixed-case bitmap font (bits 7..1 active, 2px vertical stems).
+fn glyph_8x12(ch: char) -> [u8; 12] {
+    match ch {
+        // Uppercase A-Z (rows 1..=9, 9px cap height, 2px vertical stems)
+        'A' => [0x00, 0x38, 0x6C, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'B' => [0x00, 0xFC, 0xC6, 0xC6, 0xFC, 0xC6, 0xC6, 0xC6, 0xC6, 0xFC, 0x00, 0x00],
+        'C' => [0x00, 0x7C, 0xC6, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00],
+        'D' => [0x00, 0xF8, 0xCC, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xCC, 0xF8, 0x00, 0x00],
+        'E' => [0x00, 0xFE, 0xC0, 0xC0, 0xF8, 0xC0, 0xC0, 0xC0, 0xC0, 0xFE, 0x00, 0x00],
+        'F' => [0x00, 0xFE, 0xC0, 0xC0, 0xF8, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0x00, 0x00],
+        'G' => [0x00, 0x7C, 0xC6, 0xC0, 0xC0, 0xCE, 0xC6, 0xC6, 0xC6, 0x7E, 0x00, 0x00],
+        'H' => [0x00, 0xC6, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'I' => [0x00, 0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00, 0x00],
+        'J' => [0x00, 0x3E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0xCC, 0xCC, 0x78, 0x00, 0x00],
+        'K' => [0x00, 0xC6, 0xCC, 0xD8, 0xF0, 0xF0, 0xD8, 0xCC, 0xC6, 0xC6, 0x00, 0x00],
+        'L' => [0x00, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xFE, 0x00, 0x00],
+        'M' => [0x00, 0xC6, 0xEE, 0xFE, 0xD6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'N' => [0x00, 0xC6, 0xE6, 0xF6, 0xFE, 0xDE, 0xCE, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'O' => [0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        'P' => [0x00, 0xFC, 0xC6, 0xC6, 0xC6, 0xFC, 0xC0, 0xC0, 0xC0, 0xC0, 0x00, 0x00],
+        'Q' => [0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xDE, 0x7C, 0x06, 0x00],
+        'R' => [0x00, 0xFC, 0xC6, 0xC6, 0xC6, 0xFC, 0xD8, 0xCC, 0xC6, 0xC6, 0x00, 0x00],
+        'S' => [0x00, 0x7C, 0xC6, 0xC0, 0x78, 0x0E, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00],
+        'T' => [0x00, 0xFE, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00],
+        'U' => [0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        'V' => [0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x10, 0x00, 0x00],
+        'W' => [0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xFE, 0xEE, 0xC6, 0xC6, 0x00, 0x00],
+        'X' => [0x00, 0xC6, 0xC6, 0x6C, 0x38, 0x38, 0x6C, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'Y' => [0x00, 0xC6, 0xC6, 0x6C, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00],
+        'Z' => [0x00, 0xFE, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xC0, 0xFE, 0x00, 0x00],
+
+        // Lowercase a-z (distinct x-height rows 3..=9, ascenders 1..=9, descenders 3..=11)
+        'a' => [0x00, 0x00, 0x00, 0x78, 0x0C, 0x7C, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00],
+        'b' => [0x00, 0xC0, 0xC0, 0xDC, 0xE6, 0xC6, 0xC6, 0xC6, 0xE6, 0xDC, 0x00, 0x00],
+        'c' => [0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC0, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00],
+        'd' => [0x00, 0x06, 0x06, 0x76, 0xCE, 0xC6, 0xC6, 0xC6, 0xCE, 0x76, 0x00, 0x00],
+        'e' => [0x00, 0x00, 0x00, 0x7C, 0xC6, 0xFE, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00],
+        'f' => [0x00, 0x3C, 0x66, 0x60, 0xF8, 0x60, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00],
+        'g' => [0x00, 0x00, 0x00, 0x76, 0xCE, 0xC6, 0xC6, 0xCE, 0x76, 0x06, 0xC6, 0x7C],
+        'h' => [0x00, 0xC0, 0xC0, 0xDC, 0xE6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'i' => [0x00, 0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00],
+        'j' => [0x00, 0x0C, 0x00, 0x1C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0xCC, 0xCC, 0x78],
+        'k' => [0x00, 0xC0, 0xC0, 0xCC, 0xD8, 0xF0, 0xF0, 0xD8, 0xCC, 0xC6, 0x00, 0x00],
+        'l' => [0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00],
+        'm' => [0x00, 0x00, 0x00, 0xEC, 0xFE, 0xD6, 0xD6, 0xD6, 0xC6, 0xC6, 0x00, 0x00],
+        'n' => [0x00, 0x00, 0x00, 0xDC, 0xE6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00],
+        'o' => [0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        'p' => [0x00, 0x00, 0x00, 0xDC, 0xE6, 0xC6, 0xC6, 0xE6, 0xDC, 0xC0, 0xC0, 0xC0],
+        'q' => [0x00, 0x00, 0x00, 0x76, 0xCE, 0xC6, 0xC6, 0xCE, 0x76, 0x06, 0x06, 0x06],
+        'r' => [0x00, 0x00, 0x00, 0xDC, 0xE6, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0x00, 0x00],
+        's' => [0x00, 0x00, 0x00, 0x7E, 0xC0, 0x7C, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00],
+        't' => [0x00, 0x30, 0x30, 0xFC, 0x30, 0x30, 0x30, 0x30, 0x36, 0x1C, 0x00, 0x00],
+        'u' => [0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00],
+        'v' => [0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x10, 0x00, 0x00],
+        'w' => [0x00, 0x00, 0x00, 0xC6, 0xC6, 0xD6, 0xD6, 0xFE, 0xEE, 0x44, 0x00, 0x00],
+        'x' => [0x00, 0x00, 0x00, 0xC6, 0x6C, 0x38, 0x38, 0x6C, 0xC6, 0xC6, 0x00, 0x00],
+        'y' => [0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xCE, 0x76, 0x06, 0xC6, 0x7C, 0x00],
+        'z' => [0x00, 0x00, 0x00, 0xFE, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xFE, 0x00, 0x00],
+
+        // Digits 0-9
+        '0' => [0x00, 0x7C, 0xC6, 0xCE, 0xDE, 0xF6, 0xE6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        '1' => [0x00, 0x18, 0x38, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00, 0x00],
+        '2' => [0x00, 0x7C, 0xC6, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xFE, 0x00, 0x00],
+        '3' => [0x00, 0x7C, 0xC6, 0x06, 0x3C, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00],
+        '4' => [0x00, 0x0C, 0x1C, 0x3C, 0x6C, 0xCC, 0xFE, 0x0C, 0x0C, 0x0C, 0x00, 0x00],
+        '5' => [0x00, 0xFE, 0xC0, 0xC0, 0xFC, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00],
+        '6' => [0x00, 0x3C, 0x60, 0xC0, 0xFC, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        '7' => [0x00, 0xFE, 0xC6, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00],
+        '8' => [0x00, 0x7C, 0xC6, 0xC6, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00],
+        '9' => [0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0x0C, 0x18, 0x70, 0x00, 0x00],
+
+        // Symbols & Punctuation
+        ':' => [0x00, 0x00, 0x00, 0x38, 0x38, 0x00, 0x00, 0x38, 0x38, 0x00, 0x00, 0x00],
+        ';' => [0x00, 0x00, 0x00, 0x38, 0x38, 0x00, 0x00, 0x38, 0x38, 0x18, 0x30, 0x00],
+        '-' => [0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '_' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00],
+        '/' => [0x00, 0x06, 0x0C, 0x0C, 0x18, 0x30, 0x30, 0x60, 0xC0, 0x80, 0x00, 0x00],
+        '|' => [0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
+        '(' => [0x00, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00, 0x00],
+        ')' => [0x00, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00, 0x00],
+        '[' => [0x00, 0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00, 0x00],
+        ']' => [0x00, 0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00, 0x00],
+        '$' => [0x18, 0x7E, 0xD8, 0xD8, 0x7C, 0x1E, 0x1B, 0x1B, 0x7E, 0x18, 0x00, 0x00],
+        '#' => [0x00, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0x00, 0x00, 0x00],
+        '%' => [0x00, 0xC6, 0xCC, 0x18, 0x30, 0x30, 0x66, 0xC6, 0x00, 0x00, 0x00, 0x00],
+        '+' => [0x00, 0x00, 0x18, 0x18, 0x18, 0xFE, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00],
+        '=' => [0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ',' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x38, 0x18, 0x30],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x38, 0x00, 0x00],
+        '!' => [0x00, 0x18, 0x3C, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
+        '?' => [0x00, 0x7C, 0xC6, 0x0C, 0x18, 0x30, 0x30, 0x00, 0x30, 0x30, 0x00, 0x00],
+        '\'' => [0x00, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '&' => [0x00, 0x38, 0x6C, 0x6C, 0x38, 0x76, 0xDC, 0xCC, 0xDC, 0x76, 0x00, 0x00],
+        '>' => [0x00, 0xC0, 0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x00, 0x00],
+        '<' => [0x00, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x60, 0x30, 0x18, 0x0C, 0x00, 0x00],
+        _ => [0; 12],
+    }
+}
+
+/// Clean 5x7 uppercase/symbol bitmap font used at 2x scale for the main banner.
 fn glyph_5x7(ch: char) -> [u8; 7] {
     match ch.to_ascii_uppercase() {
         'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
