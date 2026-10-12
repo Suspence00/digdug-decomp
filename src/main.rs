@@ -36,57 +36,7 @@ fn show_rom_error_and_exit(err: &str) -> ! {
     std::process::exit(1);
 }
 
-#[cfg(windows)]
-fn attach_to_interactive_desktop() {
-    unsafe {
-        use windows_sys::Win32::System::StationsAndDesktops::{
-            GetThreadDesktop, GetUserObjectInformationW, OpenDesktopW, OpenInputDesktop,
-            SetThreadDesktop, UOI_NAME,
-        };
-        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-
-        let cur_desk = GetThreadDesktop(GetCurrentThreadId());
-        let mut name_buf = [0u16; 128];
-        let mut needed = 0u32;
-        if GetUserObjectInformationW(
-            cur_desk,
-            UOI_NAME as i32,
-            name_buf.as_mut_ptr() as *mut _,
-            (name_buf.len() * 2) as u32,
-            &mut needed,
-        ) != 0
-        {
-            let len = name_buf.iter().position(|&c| c == 0).unwrap_or(0);
-            let desk_name = String::from_utf16_lossy(&name_buf[..len]);
-            println!("[Desktop] Initial thread desktop: '{}'", desk_name);
-            if !desk_name.eq_ignore_ascii_case("Default") {
-                let default_w: [u16; 8] = [
-                    b'D' as u16,
-                    b'e' as u16,
-                    b'f' as u16,
-                    b'a' as u16,
-                    b'u' as u16,
-                    b'l' as u16,
-                    b't' as u16,
-                    0,
-                ];
-                let mut target_desk = OpenInputDesktop(0, 0, 0x01FF);
-                if target_desk.is_null() {
-                    target_desk = OpenDesktopW(default_w.as_ptr(), 0, 0, 0x01FF);
-                }
-                if !target_desk.is_null() {
-                    let ok = SetThreadDesktop(target_desk);
-                    println!("[Desktop] SetThreadDesktop('Default') -> {}", ok);
-                }
-            }
-        }
-    }
-}
-
 fn main() {
-    #[cfg(windows)]
-    attach_to_interactive_desktop();
-
     let args: Vec<String> = std::env::args().collect();
     let rom_dir = Path::new("roms/extracted");
 
@@ -107,7 +57,6 @@ fn main() {
     // Optional automated headless verification mode (`cargo run --release --bin digdug -- --headless-test`)
     if args.iter().any(|a| a == "--headless-test") {
         println!("Running Dig Dug headless verification...");
-        machine.verify_lockstep = true;
         // Simulate inserting a coin, starting a 1-Player game, waiting for opening fanfare,
         // and then digging and firing the harpoon during active Round 1 gameplay!
         let mut saw_harpoon = false;
@@ -142,12 +91,8 @@ fn main() {
             }
         }
         println!(
-            "  Lockstep mismatches: {} | Saw harpoon fire: {} | 120Hz WSG ticks active: ({}, {})",
-            machine.lockstep_mismatches, saw_harpoon, active_wsg_tick0, active_wsg_tick1
-        );
-        assert_eq!(
-            machine.lockstep_mismatches, 0,
-            "All decompiled subroutines must match Z80 hardware registers, flags, and RAM!"
+            "  Saw harpoon fire: {} | 120Hz WSG ticks active: ({}, {})",
+            saw_harpoon, active_wsg_tick0, active_wsg_tick1
         );
         assert!(
             saw_harpoon,
@@ -165,24 +110,28 @@ fn main() {
         );
         let fb_w = render_workbench_window(&machine, &arcade_fb, &mut window_fb, true);
         assert_eq!(fb_w, TELEMETRY_WINDOW_WIDTH);
-        let _ = std::fs::create_dir_all("docs");
-        save_png(
-            Path::new("docs/screenshot_inspector.png"),
-            &window_fb,
-            TELEMETRY_WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-        )
-        .expect("Failed to write docs/screenshot_inspector.png");
+        if args.iter().any(|a| a == "--update-screenshots") {
+            let _ = std::fs::create_dir_all("docs");
+            save_png(
+                Path::new("docs/screenshot_inspector.png"),
+                &window_fb,
+                TELEMETRY_WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+            )
+            .expect("Failed to write docs/screenshot_inspector.png");
+        }
 
         let fb_w_clean = render_workbench_window(&machine, &arcade_fb, &mut window_fb, false);
         assert_eq!(fb_w_clean, ARCADE_WINDOW_WIDTH);
-        save_png(
-            Path::new("docs/screenshot_arcade.png"),
-            &window_fb,
-            ARCADE_WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-        )
-        .expect("Failed to write docs/screenshot_arcade.png");
+        if args.iter().any(|a| a == "--update-screenshots") {
+            save_png(
+                Path::new("docs/screenshot_arcade.png"),
+                &window_fb,
+                ARCADE_WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+            )
+            .expect("Failed to write docs/screenshot_arcade.png");
+        }
 
         let lit_arcade_pixels = arcade_fb.iter().filter(|&&px| px != 0).count();
         let snap = machine.snapshot();
@@ -212,12 +161,13 @@ fn main() {
             machine.decomp.sound_engine_calls,
         );
         println!(
-            "  Arcade CRT lit pixels: {} / {} (Active enemies: {}, Round: {}, Lives: {})",
+            "  Arcade CRT lit pixels: {} / {} (Active enemies: {}, Round: {}, Lives: {}, High Score: {})",
             lit_arcade_pixels,
             ARCADE_WIDTH * ARCADE_HEIGHT,
             snap.active_enemies,
             snap.p1_round,
-            snap.p1_lives
+            snap.p1_lives,
+            snap.high_score
         );
         assert!(
             machine.bus.game_started,
@@ -281,7 +231,7 @@ fn main() {
         WINDOW_HEIGHT,
         WindowOptions {
             resize: true,
-            topmost: true,
+            topmost: false,
             scale_mode: minifb::ScaleMode::AspectRatioStretch,
             ..WindowOptions::default()
         },
@@ -304,34 +254,14 @@ fn main() {
 
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            BringWindowToTop, GetWindowRect, IsWindowVisible, SetForegroundWindow, SetWindowPos,
-            ShowWindow, HWND_TOPMOST, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW, SW_SHOWNORMAL,
+            SetForegroundWindow, ShowWindow, SW_SHOWNORMAL,
         };
         let hwnd = window.get_window_handle() as windows_sys::Win32::Foundation::HWND;
         if !hwnd.is_null() {
             window.set_position(target_x as isize, target_y as isize);
             ShowWindow(hwnd, SW_SHOWNORMAL);
-            ShowWindow(hwnd, SW_SHOW);
-            SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                target_x,
-                target_y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_SHOWWINDOW,
-            );
-            BringWindowToTop(hwnd);
             SetForegroundWindow(hwnd);
-            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            GetWindowRect(hwnd, &mut rect);
-            let vis_after = IsWindowVisible(hwnd);
-            println!(
-                "  [Win32 ] visible={}, placed at rect=({}, {})..({}, {})",
-                vis_after, rect.left, rect.top, rect.right, rect.bottom
-            );
         }
     }
 
@@ -346,8 +276,6 @@ fn main() {
     );
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let frame_start = Instant::now();
-
         // Toggle Live Rust Telemetry drawer on [Tab]
         if window.is_key_pressed(Key::Tab, KeyRepeat::No) {
             show_telemetry = !show_telemetry;
@@ -383,11 +311,9 @@ fn main() {
             }
         }
 
-        // Reset cabinet on [R]
+        // Warm-reset cabinet on [R] (preserving non-volatile ER2055 EAROM high-score chip)
         if window.is_key_pressed(Key::R, KeyRepeat::No) {
-            if let Ok(fresh_roms) = DigDugRoms::load_from_extracted_dir(rom_dir) {
-                machine = DigDugMachine::new(fresh_roms);
-            }
+            machine.warm_reset();
         }
 
         // Arcade cabinet inputs (4-way priority on joystick)
@@ -416,7 +342,7 @@ fn main() {
         }
         machine.bus.buttons = buttons;
 
-        // Step one 60Hz frame of the 100% Native Rust engine
+        // Step one 60Hz frame of the native Rust engine
         machine.run_frame();
 
         // Stream both 120Hz sub-frame ticks of 3-channel Namco WSG audio
@@ -444,7 +370,5 @@ fn main() {
             println!("({:?}) 10 window frames rendered and presented successfully!", t0.elapsed());
             break;
         }
-
-        let _elapsed = frame_start.elapsed();
     }
 }

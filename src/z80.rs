@@ -1,6 +1,6 @@
-/// Z80 CPU Register File & ALU State for the 100% Native Rust Dig Dug Recompilation.
-/// No runtime Z80 opcode decoding or interpreter exists — all 3 CPUs execute compiled Rust
-/// functions (`src/decomp.rs` and `src/recompiled_cpu*.rs`) directly against this state.
+/// Z80 CPU Register File & ALU State for the Native Rust Dig Dug Decompilation.
+/// No runtime Z80 opcode decoding or interpreter is used during gameplay — all 3 CPUs
+/// execute translated Rust functions (`src/decomp.rs`) directly against this state.
 
 pub trait Z80Bus {
     fn read_byte(&mut self, cpu_id: usize, addr: u16) -> u8;

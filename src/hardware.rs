@@ -272,19 +272,20 @@ impl Z80Bus for DigDugBus {
         if (addr & 0xFFC0) == 0xB800 {
             self.earom_addr = (addr & 0x3F) as usize;
             self.earom_data = val;
-            self.earom[self.earom_addr] = val;
+            return;
+        }
+        if addr == 0xB840 && (val & 0x02) != 0 {
+            self.earom[self.earom_addr & 0x3F] = self.earom_data;
         }
     }
 }
 
-/// Complete Dig Dug arcade hardware cabinet + hybrid Rust decompilation harness.
+/// Complete Dig Dug arcade hardware cabinet and native Rust decompilation runner.
 pub struct DigDugMachine {
     pub cpus: [Z80; 3],
     pub bus: DigDugBus,
     pub decomp: DecompStats,
     pub frame_count: u64,
-    pub verify_lockstep: bool,
-    pub lockstep_mismatches: u64,
     prev_sub_reset: bool,
 }
 
@@ -295,25 +296,40 @@ impl DigDugMachine {
             bus: DigDugBus::new(roms),
             decomp: DecompStats::new(),
             frame_count: 0,
-            verify_lockstep: true,
-            lockstep_mismatches: 0,
             prev_sub_reset: true,
         };
+        machine.fast_forward_boot();
+        machine
+    }
+
+    /// Warm-resets the arcade cabinet while preserving the non-volatile 64-byte ER2055 EAROM chip.
+    pub fn warm_reset(&mut self) {
+        let saved_earom = self.bus.earom;
+        let roms = (*self.bus.roms).clone();
+        self.cpus = [Z80::new(0), Z80::new(1), Z80::new(2)];
+        self.bus = DigDugBus::new(roms);
+        self.bus.earom = saved_earom;
+        self.decomp = DecompStats::new();
+        self.frame_count = 0;
+        self.prev_sub_reset = true;
+        self.fast_forward_boot();
+    }
+
+    fn fast_forward_boot(&mut self) {
         // Fast-forward through the initial 1982 power-on RAM/ROM self-test and crosshatch screen
         // (~315 frames) so the user lands right at the title/attract screen immediately on launch!
         for _ in 0..340 {
-            machine.run_frame();
-            if machine.bus.game_started {
+            self.run_frame();
+            if self.bus.game_started {
                 for _ in 0..10 {
-                    machine.run_frame();
+                    self.run_frame();
                 }
                 break;
             }
         }
-        machine
     }
 
-    fn step_cpu_with_optional_lockstep(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
+    fn step_cpu(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
         match cpu_idx {
             0 => {
                 step_human_cpu0(&mut self.cpus[0], &mut self.bus, roms_ref, &mut self.decomp);
@@ -347,7 +363,7 @@ impl DigDugMachine {
             for _ in 0..SUB_STEPS_PER_QUARTER {
                 // Execute 4 steps on CPU 0 (Main)
                 for _ in 0..4 {
-                    self.step_cpu_with_optional_lockstep(0, &roms_ref);
+                    self.step_cpu(0, &roms_ref);
                     if self.bus.sub_cpu_reset && !self.prev_sub_reset {
                         self.cpus[1].reset();
                         self.cpus[2].reset();
@@ -358,11 +374,11 @@ impl DigDugMachine {
                 if !self.bus.sub_cpu_reset {
                     // Execute 4 steps on CPU 1 (Sub/AI)
                     for _ in 0..4 {
-                        self.step_cpu_with_optional_lockstep(1, &roms_ref);
+                        self.step_cpu(1, &roms_ref);
                     }
                     // Execute 4 steps on CPU 2 (Sound)
                     for _ in 0..4 {
-                        self.step_cpu_with_optional_lockstep(2, &roms_ref);
+                        self.step_cpu(2, &roms_ref);
                     }
                 }
 

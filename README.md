@@ -1,8 +1,8 @@
 # Dig Dug (1982) — Rust Decompilation & Arcade Hardware Implementation
 
-A clean-room reverse-engineering and native Rust implementation of Namco's **Dig Dug** (1982, Rev 2) triple-Z80 arcade hardware.
+A reverse-engineering and native Rust decompilation of Namco's **Dig Dug** (1982, Rev 2) triple-Z80 arcade hardware.
 
-All executable code across all three Z80 processors (`CPU 0` Main Game, `CPU 1` Monster & Sprite AI, and `CPU 2` Sound Sequencer) has been decompiled into human-readable Rust ([`src/decomp.rs`](src/decomp.rs)), verified in lockstep against the original hardware state (`0` register/flag/RAM mismatches), and paired with cycle-accurate Namco custom silicon emulation (`06XX`, `51XX`, `53XX`, and 120 Hz 3-channel Namco WSG wavetable audio).
+All executable code across all three Z80 processors (`CPU 0` Main Game, `CPU 1` Monster & Sprite AI, and `CPU 2` Sound Sequencer) has been translated into Rust ([`src/decomp.rs`](src/decomp.rs)) and paired with Namco custom silicon emulation (`06XX`, `51XX`, `53XX`, non-volatile `ER2055` high-score EAROM, and 120 Hz 3-channel Namco WSG wavetable audio).
 
 <p align="center">
   <img src="docs/screenshot_arcade.png" alt="Dig Dug Arcade Window" width="380" />

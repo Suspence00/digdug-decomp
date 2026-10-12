@@ -2,12 +2,17 @@
 
 pub fn resolve_mem_symbol(addr: u16) -> Option<&'static str> {
     match addr {
-        // Sound registers (Namco WSG 3-voice waveform & frequency registers)
-        0x6800..=0x6804 => Some("WSG_SOUND_WAVE_VOL"),
-        0x6805 => Some("WSG_CH0_FREQ_L"),
-        0x6810 => Some("WSG_CH0_VOL"),
-        0x6815 => Some("WSG_CH0_WAVE"),
-        0x6806..=0x681F => Some("WSG_SOUND_REG"),
+        // Sound registers (Namco WSG 3-voice waveform, frequency & volume registers)
+        0x6805 => Some("WSG_CH0_WAVE"),
+        0x680A => Some("WSG_CH1_WAVE"),
+        0x680F => Some("WSG_CH2_WAVE"),
+        0x6810..=0x6814 => Some("WSG_CH0_FREQ"),
+        0x6815 => Some("WSG_CH0_VOL"),
+        0x6816..=0x6819 => Some("WSG_CH1_FREQ"),
+        0x681A => Some("WSG_CH1_VOL"),
+        0x681B..=0x681E => Some("WSG_CH2_FREQ"),
+        0x681F => Some("WSG_CH2_VOL"),
+        0x6800..=0x681F => Some("WSG_SOUND_REG"),
 
         // LS259 Misc Control Latch (8R)
         0x6820 => Some("LATCH_IRQ1_ENABLE"),       // Main CPU VBlank IRQ enable/ack
@@ -94,7 +99,7 @@ pub fn resolve_code_symbol(cpu_id: usize, addr: u16) -> Option<(&'static str, &'
         (2, 0x0000) => Some(("cpu2_reset", "Sound CPU Reset vector: LD SP, 0x8B80; JP 0x0085")),
         (2, 0x0008) => Some(("cpu2_rst_08", "RST 08h: HL += 2*A table indexing")),
         (2, 0x0010) => Some(("cpu2_rst_10", "RST 10h: HL += A table indexing")),
-        (2, 0x0066) => Some(("cpu2_nmi_audio_tick", "Sound CPU periodic NMI timer interrupt (240 Hz audio tick)")),
+        (2, 0x0066) => Some(("cpu2_nmi_audio_tick", "Sound CPU periodic NMI timer interrupt (120 Hz audio tick)")),
         (2, 0x0085) => Some(("cpu2_main_loop", "Sound CPU initialization & background sound sequencer loop")),
         _ => None,
     }

@@ -1,12 +1,11 @@
 use crate::rom::DigDugRoms;
 use crate::z80::{ Z80, Z80Bus, FLAG_C, FLAG_H, FLAG_N, FLAG_PV, FLAG_S, FLAG_Z };
 
-/// Tracks execution telemetry for our native Rust decompiled subroutines and static AOT recompiler.
+/// Tracks execution telemetry for our native Rust decompiled subroutines.
 #[derive(Clone, Debug, Default)]
 pub struct DecompStats {
     pub total_rust_calls: u64,
     pub calls_this_frame: u32,
-    pub aot_instructions_executed: u64,
     pub rst_table_calls: u64,
     pub dirt_init_calls: u64,
     pub round_advance_calls: u64,
@@ -25,7 +24,6 @@ impl DecompStats {
         Self {
             total_rust_calls: 0,
             calls_this_frame: 0,
-            aot_instructions_executed: 0,
             rst_table_calls: 0,
             dirt_init_calls: 0,
             round_advance_calls: 0,
@@ -44,7 +42,6 @@ impl DecompStats {
     pub fn merge(&mut self, other: &Self) {
         self.total_rust_calls += other.total_rust_calls;
         self.calls_this_frame += other.calls_this_frame;
-        self.aot_instructions_executed += other.aot_instructions_executed;
         self.rst_table_calls += other.rst_table_calls;
         self.dirt_init_calls += other.dirt_init_calls;
         self.round_advance_calls += other.round_advance_calls;
@@ -198,7 +195,7 @@ impl GameStateSnapshot {
             monster_speed: r(0x87BD),
             bonus_veg_round_clamped: r(0x87E8),
             p1_score: Self::decode_vram_score(mem, 1020),
-            high_score: Self::decode_vram_score(mem, 1012),
+            high_score: Self::decode_vram_score(mem, 1010),
             digdug_x,
             digdug_y,
             digdug_sprite,
@@ -5825,7 +5822,7 @@ pub fn decomp_cpu2_nmi_audio_tick<B: Z80Bus>(cpu: &mut Z80, bus: &mut B, roms: &
     cpu.total_cycles += 950;
 }
 
-/// Executes CPU 2 (Sound Z80) 100% in Human Rust without `src/recompiled_cpu2.rs`.
+/// Steps CPU 2 (Sound Z80) in native Rust.
 pub fn step_human_cpu2<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
@@ -15476,7 +15473,7 @@ fn decomp_highscore_blink_and_timeout_3519<B: Z80Bus>(
     true
 }
 
-/// Executes CPU 0 (Main Z80) 100% in Human Rust without `src/recompiled_cpu0.rs`.
+/// Steps CPU 0 (Main Z80) in native Rust.
 pub fn step_human_cpu0<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
@@ -15654,7 +15651,7 @@ pub fn step_human_cpu0<B: Z80Bus>(
             bus.write_byte(0, 0x83F7, 0x10);
             bus.write_byte(0, 0x83F8, 0x10);
 
-            call_cpu_sub(cpu, bus, roms, 0x185A, 0x020C);
+            call_cpu_sub(cpu, bus, roms, 0x19A3, 0x020C);
             call_cpu_sub(cpu, bus, roms, 0x144F, 0x020F);
             call_cpu_sub(cpu, bus, roms, 0x1432, 0x0212);
 
