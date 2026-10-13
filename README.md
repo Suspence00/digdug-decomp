@@ -18,6 +18,7 @@ All executable code across all three Z80 processors (`CPU 0` Main Game, `CPU 1` 
 | :--- | :--- |
 | **`5`** or **`C`** | Insert Coin |
 | **`1`** or **`Enter`** | Start 1-Player Game |
+| **`2`** | Start 2-Player Game (Alternating, requires 2 credits) |
 | **`Arrow Keys`** or **`WASD`** | Move Dig Dug (4-way arcade priority) |
 | **`Space`**, **`Z`**, or **`Left Ctrl`** | Fire / Pump Harpoon |
 | **`Tab`** | Toggle Live Hardware & Memory Inspector Panel |

@@ -13,6 +13,7 @@ pub const INPUT_LEFT: u8 = 0x08;
 pub const INPUT_FIRE: u8 = 0x10;
 pub const INPUT_START1: u8 = 0x20;
 pub const INPUT_COIN: u8 = 0x40;
+pub const INPUT_START2: u8 = 0x80;
 
 const NAMCO_NMI_DELAY: u8 = 30;
 
@@ -131,6 +132,13 @@ impl DigDugBus {
             {
                 self.namco_credit -= 1;
             }
+
+            if (self.keymask_d[0] & INPUT_START2) != 0
+                && (self.keymask_d[1] & INPUT_START2) == 0
+                && self.namco_credit >= 2
+            {
+                self.namco_credit -= 2;
+            }
         }
 
         // Single-read rising edge for Namco 51XX fire button press detection
@@ -147,6 +155,9 @@ impl DigDugBus {
                             }
                             if (keymask & INPUT_START1) != 0 {
                                 retval |= 0x10;
+                            }
+                            if (keymask & INPUT_START2) != 0 {
+                                retval |= 0x20;
                             }
                             !retval
                         }
@@ -620,5 +631,71 @@ mod tests {
         assert_eq!(machine.bus.read_byte(0, 0x89BC), 0x1B);
         assert_eq!(machine.bus.read_byte(0, 0x89BD), 0x1C);
         assert_eq!(machine.bus.read_byte(0, 0x89BE), 0x1D);
+    }
+
+    #[test]
+    fn test_two_player_game_start() {
+        use std::path::Path;
+        let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted"))
+            .expect("ROMs missing in roms/extracted");
+        let mut machine = DigDugMachine::new(roms);
+
+        // Power-on self-test settling frames
+        for _ in 0..100 {
+            machine.run_frame();
+        }
+
+        // Insert Coin 1
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_COIN;
+            machine.run_frame();
+        }
+        for _ in 0..10 {
+            machine.bus.buttons = 0;
+            machine.run_frame();
+        }
+        assert_eq!(machine.bus.namco_credit, 1);
+
+        // Insert Coin 2
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_COIN;
+            machine.run_frame();
+        }
+        for _ in 0..10 {
+            machine.bus.buttons = 0;
+            machine.run_frame();
+        }
+        assert_eq!(machine.bus.namco_credit, 2);
+
+        // Press 2-Player Start button
+        for _ in 0..6 {
+            machine.bus.buttons = INPUT_START2;
+            machine.run_frame();
+        }
+        for _ in 0..10 {
+            machine.bus.buttons = 0;
+            machine.run_frame();
+        }
+
+        // Both credits should be consumed
+        assert_eq!(machine.bus.namco_credit, 0);
+
+        // Run through opening fanfare until active gameplay begins
+        for _ in 0..500 {
+            machine.run_frame();
+        }
+
+        // $8400 bit 0 must be 1 (2-player game) and bit 6 must be 1 (game active)
+        let flags_8400 = machine.bus.read_byte(0, 0x8400);
+        assert_ne!(flags_8400 & 0x01, 0, "Expected bit 0 ($01) set for 2-Player mode");
+        assert_ne!(flags_8400 & 0x40, 0, "Expected bit 6 ($40) set for Active Game");
+
+        let snap = machine.snapshot();
+        assert!(snap.in_game, "Expected in_game to be true");
+        assert_eq!(snap.active_player, 1, "Player 1 should start first");
+        // Starting DIP switch is 3 lives: Player 1 has 1 active + 2 in reserve ($840A = 2),
+        // while Player 2 has not started yet and has 3 lives ($840B = 3).
+        assert_eq!(snap.p1_lives, 2, "Player 1 should have 2 lives in reserve");
+        assert_eq!(snap.p2_lives, 3, "Player 2 should have 3 lives in reserve");
     }
 }

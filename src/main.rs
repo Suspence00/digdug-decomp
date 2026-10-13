@@ -4,7 +4,7 @@ use std::time::Instant;
 use digdug_re::audio::NamcoWsgAudio;
 use digdug_re::hardware::{
     DigDugMachine, INPUT_COIN, INPUT_DOWN, INPUT_FIRE, INPUT_LEFT, INPUT_RIGHT, INPUT_START1,
-    INPUT_UP,
+    INPUT_START2, INPUT_UP,
 };
 use digdug_re::rom::DigDugRoms;
 use digdug_re::video::{
@@ -226,7 +226,7 @@ fn main() {
     };
 
     let mut window = Window::new(
-        "Dig Dug  —  [5/C] Coin   [1/Enter] Start   [Arrows/WASD] Move   [Space/Z] Pump   [R] Reset   [Tab] Info",
+        "Dig Dug  —  [5/C] Coin   [1/Enter] 1P   [2] 2P   [Arrows/WASD] Move   [Space/Z] Pump   [R] Reset   [Tab] Info",
         ARCADE_WINDOW_WIDTH,
         WINDOW_HEIGHT,
         WindowOptions {
@@ -271,7 +271,7 @@ fn main() {
     let mut loop_frames = 0u32;
 
     println!(
-        "[3/3] ({:?}) Dig Dug Running! (Controls: [5/C] Coin, [1/Enter] Start, [Arrows/WASD] Move, [Space/Z] Pump, [Tab] Telemetry, [R] Reset)",
+        "[3/3] ({:?}) Dig Dug Running! (Controls: [5/C] Coin, [1/Enter] Start 1P, [2] Start 2P, [Arrows/WASD] Move, [Space/Z] Pump, [Tab] Telemetry, [R] Reset)",
         t0.elapsed()
     );
 
@@ -343,6 +343,9 @@ fn main() {
         }
         if window.is_key_down(Key::Key1) || window.is_key_down(Key::Enter) {
             buttons |= INPUT_START1;
+        }
+        if window.is_key_down(Key::Key2) {
+            buttons |= INPUT_START2;
         }
         if window.is_key_down(Key::Key5) || window.is_key_down(Key::C) {
             buttons |= INPUT_COIN;

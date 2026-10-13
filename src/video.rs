@@ -268,13 +268,14 @@ pub fn render_workbench_window(
 
     // 1. Sleek Top Control Instruction Bar (x: 20..700, y: 4..30)
     draw_card(window_fb, fb_w, 20, 4, 680, 26);
-    let controls_top: [(&str, &str, usize); 6] = [
+    let controls_top: [(&str, &str, usize); 7] = [
         ("5/C", "COIN", 26),
-        ("1", "START", 122),
-        ("WASD", "MOVE", 210),
-        ("SPC", "PUMP", 316),
-        ("R", "RESET", 412),
-        ("TAB", "GUIDE", 500),
+        ("1", "1P", 112),
+        ("2", "2P", 170),
+        ("WASD", "MOVE", 228),
+        ("SPC", "PUMP", 322),
+        ("R", "RESET", 410),
+        ("TAB", "GUIDE", 492),
     ];
     for &(key_txt, label_txt, bx) in &controls_top {
         let bw = draw_badge(
@@ -353,7 +354,11 @@ pub fn render_workbench_window(
     );
 
     let (mode_label, mode_bg, mode_fg) = if snap.in_game {
-        ("ACTIVE GAMEPLAY", BADGE_EMERALD_BG, BADGE_EMERALD_FG)
+        if snap.active_player == 2 {
+            ("ACTIVE - PLAYER 2", BADGE_AMBER_BG, BADGE_AMBER_FG)
+        } else {
+            ("ACTIVE - PLAYER 1", BADGE_EMERALD_BG, BADGE_EMERALD_FG)
+        }
     } else if snap.attract_demo {
         ("ATTRACT DEMO", BADGE_AMBER_BG, BADGE_AMBER_FG)
     } else {
@@ -362,7 +367,11 @@ pub fn render_workbench_window(
     let mut bx = px + 18;
     bx += draw_badge(window_fb, fb_w, bx, 38, mode_label, mode_bg, mode_fg) + 10;
 
-    let shown_round = snap.p1_round.max(1);
+    let shown_round = if snap.active_player == 2 {
+        snap.p2_round.max(1)
+    } else {
+        snap.p1_round.max(1)
+    };
     let map_layout = if snap.stage_layout_idx > 0 {
         snap.stage_layout_idx
     } else if shown_round <= 15 {
@@ -379,12 +388,23 @@ pub fn render_workbench_window(
         BADGE_SLATE_BG,
         BADGE_AMBER_FG,
     ) + 10;
+    let (player_lives, player_score_str) = if snap.active_player == 2 {
+        (
+            snap.p2_lives,
+            format!("2UP: {:06}  HI: {:06}", snap.p2_score, snap.high_score),
+        )
+    } else {
+        (
+            snap.p1_lives,
+            format!("1UP: {:06}  HI: {:06}", snap.p1_score, snap.high_score),
+        )
+    };
     bx += draw_badge(
         window_fb,
         fb_w,
         bx,
         38,
-        &format!("LIVES: {}", snap.p1_lives),
+        &format!("LIVES: {}", player_lives),
         BADGE_SLATE_BG,
         TEXT_PRIMARY,
     ) + 10;
@@ -393,7 +413,7 @@ pub fn render_workbench_window(
         fb_w,
         bx,
         38,
-        &format!("1UP: {:06}  HI: {:06}", snap.p1_score, snap.high_score),
+        &player_score_str,
         BADGE_SLATE_BG,
         TEXT_PRIMARY,
     );
@@ -758,7 +778,7 @@ pub fn render_workbench_window(
         fb_w,
         px + 18,
         850,
-        "[5/C] Coin     [1/Enter] Start 1P     [WASD/Arrows] Move     [Space/Z] Pump Harpoon",
+        "[5/C] Coin   [1] Start 1P   [2] Start 2P   [WASD/Arrows] Move   [Space/Z] Pump",
         TEXT_PRIMARY,
     );
     draw_text(
