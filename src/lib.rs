@@ -4,5 +4,7 @@ pub mod disasm;
 pub mod hardware;
 pub mod rom;
 pub mod symbols;
+pub mod verify;
 pub mod video;
 pub mod z80;
+pub mod z80_ref;

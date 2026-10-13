@@ -6,3 +6,8 @@
 /disasm/*.asm
 *.zip
 *.7z
+
+# MAME reference emulator and its generated output
+/mame*.exe
+/mame_ref/
+/tools/mame/out/

@@ -1,0 +1,25 @@
+# Shared input script for differential tests: "<buttons hex> <frames>" per step.
+# Button bits: 01 UP, 02 RIGHT, 04 DOWN, 08 LEFT, 10 FIRE, 20 START1, 40 COIN
+00 60
+40 6
+00 60
+20 6
+00 300
+02 30
+00 20
+04 30
+00 20
+08 30
+00 20
+01 30
+00 20
+10 1
+00 10
+10 30
+00 10
+10 1
+00 4
+10 1
+00 4
+10 1
+00 20

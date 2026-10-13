@@ -49,6 +49,10 @@ pub struct DigDugBus {
     /// Live controller button bitmask and 3-read history for edge detection
     pub buttons: u8,
     pub keymask_d: [u8; 3],
+
+    /// Optional trace of CPU accesses to the Namco 06XX/51XX window ($7000..$71FF) as
+    /// `(kind 'R'|'W', address, value)`. `None` in normal play; used by differential tests vs MAME.
+    pub trace: Option<Vec<(char, u16, u8)>>,
 }
 
 impl DigDugBus {
@@ -71,10 +75,14 @@ impl DigDugBus {
             namco_credit: 0,
             buttons: 0,
             keymask_d: [0; 3],
+            trace: None,
         }
     }
 
     fn namco_write_dd(&mut self, addr: u16, val: u8) {
+        if let Some(t) = &mut self.trace {
+            t.push(('W', 0x7000 | addr, val));
+        }
         if (addr & 0x0100) != 0 {
             self.namco_command = val;
             if val == 0xA1 {
@@ -92,6 +100,14 @@ impl DigDugBus {
     }
 
     fn namco_read_dd(&mut self, addr: u16) -> u8 {
+        let val = self.namco_read_dd_inner(addr);
+        if let Some(t) = &mut self.trace {
+            t.push(('R', 0x7000 | addr, val));
+        }
+        val
+    }
+
+    fn namco_read_dd_inner(&mut self, addr: u16) -> u8 {
         if (addr & 0x0100) != 0 {
             return self.namco_command;
         }
@@ -287,19 +303,28 @@ pub struct DigDugMachine {
     pub decomp: DecompStats,
     pub frame_count: u64,
     prev_sub_reset: bool,
+    /// When `Some`, every CPU step is cross-checked against the reference Z80 interpreter
+    /// running the original ROM bytes (see `verify.rs`). `None` in normal play.
+    pub verify: Option<Box<crate::verify::VerifyLog>>,
 }
 
 impl DigDugMachine {
     pub fn new(roms: DigDugRoms) -> Self {
-        let mut machine = Self {
+        let mut machine = Self::new_unbooted(roms);
+        machine.fast_forward_boot();
+        machine
+    }
+
+    /// Creates the machine at power-on without fast-forwarding through the boot self-test.
+    pub fn new_unbooted(roms: DigDugRoms) -> Self {
+        Self {
             cpus: [Z80::new(0), Z80::new(1), Z80::new(2)],
             bus: DigDugBus::new(roms),
             decomp: DecompStats::new(),
             frame_count: 0,
             prev_sub_reset: true,
-        };
-        machine.fast_forward_boot();
-        machine
+            verify: None,
+        }
     }
 
     /// Warm-resets the arcade cabinet while preserving the non-volatile 64-byte ER2055 EAROM chip.
@@ -329,7 +354,7 @@ impl DigDugMachine {
         }
     }
 
-    fn step_cpu(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
+    fn step_cpu_raw(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
         match cpu_idx {
             0 => {
                 step_human_cpu0(&mut self.cpus[0], &mut self.bus, roms_ref, &mut self.decomp);
@@ -343,6 +368,22 @@ impl DigDugMachine {
             _ => {}
         }
     }
+
+    fn step_cpu(&mut self, cpu_idx: usize, roms_ref: &Arc<DigDugRoms>) {
+        if self.verify.is_none() || cpu_idx > 2 {
+            self.step_cpu_raw(cpu_idx, roms_ref);
+            return;
+        }
+        let pre_cpu = self.cpus[cpu_idx].clone();
+        let pre_bus = self.bus.clone();
+        self.step_cpu_raw(cpu_idx, roms_ref);
+        let name = self.decomp.last_hooked_name;
+        let frame = self.frame_count;
+        if let Some(v) = self.verify.as_mut() {
+            v.check(frame, name, &pre_cpu, &pre_bus, &self.cpus[cpu_idx], &self.bus);
+        }
+    }
+
 
     pub fn run_frame(&mut self) {
         self.frame_count += 1;
