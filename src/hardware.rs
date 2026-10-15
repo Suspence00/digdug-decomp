@@ -387,6 +387,7 @@ impl DigDugMachine {
         }
         let pre_cpu = self.cpus[cpu_idx].clone();
         let pre_bus = self.bus.clone();
+        self.decomp.last_hooked_name = "instruction block";
         self.step_cpu_raw(cpu_idx, roms_ref);
         let name = self.decomp.last_hooked_name;
         let frame = self.frame_count;
@@ -472,6 +473,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
     fn test_highscore_big_score_flash_and_initial_entry() {
         let rom_dir = Path::new("roms/extracted");
         let roms = DigDugRoms::load_from_extracted_dir(rom_dir).expect("Failed to load ROMs");
@@ -634,6 +636,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
     fn test_two_player_game_start() {
         use std::path::Path;
         let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted"))

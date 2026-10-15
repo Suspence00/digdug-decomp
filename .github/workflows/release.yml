@@ -40,8 +40,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Run tests with synthetic data (no arcade ROMs)
+        run: cargo test --locked --all-targets
+
       - name: Build release binary
-        run: cargo build --release --bin digdug
+        run: cargo build --locked --release --bin digdug
 
       - name: Rename binary for release
         shell: bash

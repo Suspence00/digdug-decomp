@@ -1,5 +1,11 @@
 # Rust build artifacts
 /target/
+__pycache__/
+
+# Local release artifacts
+/digdug-windows-x86_64.exe
+/digdug-macos-arm64
+/digdug-linux-x86_64
 
 # Copyrighted arcade ROMs and generated disassembly hex dumps
 /roms/

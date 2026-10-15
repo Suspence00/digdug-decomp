@@ -1,8 +1,8 @@
 [package]
 name = "digdug-re"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
-description = "Rust decompilation and arcade hardware implementation of Namco's Dig Dug (1982) triple-Z80 system"
+description = "Native Rust translation and arcade hardware implementation of Namco's Dig Dug (1982) triple-Z80 system"
 license = "MIT"
 default-run = "digdug"
 

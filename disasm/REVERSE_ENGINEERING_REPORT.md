@@ -20,7 +20,7 @@
 | `$6820..$6823` | `LS259_MISC_LATCH` | Bit 0: CPU0 VBlank IRQ enable; Bit 1: CPU1 VBlank IRQ enable; Bit 2: CPU2 NMI disable; Bit 3: Sub-CPU Reset (`/RESET` for CPU1 & CPU2) |
 | `$7000 / $7100` | `NAMCO_06XX` | Custom bus arbiter communicating with `51XX` (joystick/coin/credit MCU) and `53XX` (DIP switch reader) via CPU0 NMI (`$0066`) |
 | `$8000..$83FF` | `VRAM_TILEMAP` | 32x32 (36x28 visible) foreground 8x8 1bpp HUD & tunnel character tilemap |
-| `$8400` | `GAME_STATUS` | Bit 0: In-game vs. Attract mode; Bit 1: Active player (`0` = P1, `1` = P2) |
+| `$8400` | `GAME_STATUS` | Bit 0: Two-player mode; Bit 1: Active player (`0` = P1, `1` = P2); Bit 6: Active game |
 | `$840A / $840B` | `P1_LIVES / P2_LIVES` | Remaining lives for Player 1 and Player 2 |
 | `$840D / $840E` | `P1_ROUND / P2_ROUND` | 8-bit round counters (`1..255`, wraps to `0` on Round 256 Kill Screen in Namco sets) |
 | `$840F / $8410` | `ROUND_CLAMPED` | Active stage index & difficulty step (clamped to `$0F` after Round 15 by `$19F7`) |

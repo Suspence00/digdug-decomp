@@ -194,7 +194,8 @@ impl GameStateSnapshot {
 
         let flags_8400 = r(0x8400);
         let attract_demo = (r(0x8657) & 0x02) != 0;
-        let in_game = (flags_8400 & 0x01) != 0 || (!attract_demo && r(0x840D) > 0 && r(0x840A) > 0);
+        // Bit 6 marks an active game. Bit 0 selects two-player mode and survives game over.
+        let in_game = (flags_8400 & 0x40) != 0;
         let active_player = if (flags_8400 & 0x02) != 0 { 2 } else { 1 };
 
         // Dig Dug's live pixel coordinates ($98A2=X, $98A3=Y) and hardware sprite #0 ($8B80)
@@ -923,6 +924,10 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             bus.write_byte(0, 0x9001, 0x8F);
             bus.write_byte(0, 0x9361, 0x8E);
             cpu.set_hl(0x9380);
+            // The final loop comparison is CP $93. The following LD A,$8E
+            // changes A without changing the resulting flags.
+            cpu.a = cpu.h;
+            cpu.sub8(0x93, false, false);
             cpu.a = 0x8E;
             stats.dirt_init_calls += 1;
             stats.total_rust_calls += 1;
@@ -958,8 +963,9 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             }
             cpu.set_hl(0x8040);
             cpu.b = 0;
+            cpu.a = 0x83;
+            cpu.sub8(0x83, false, false);
             cpu.a = 0x8F;
-            cpu.sub8(0x8F, false, false);
             stats.dirt_init_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
@@ -1635,17 +1641,17 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         // dirt ($7F), toggles bit 4 of $8401 (digging state / walking melody pitch),
         // and sets bit 2 of $8656 when carving fresh dirt!
         (1, 0x1353) => {
-            let mut b = 0u8;
-            for ptr_addr in [0x85D6u16, 0x85D8, 0x85DA, 0x85DC] {
+            let mut tiles = [0u8; 4];
+            for (tile, ptr_addr) in tiles.iter_mut().zip([0x85D6u16, 0x85D8, 0x85DA, 0x85DC]) {
                 let tile_ptr = bus.read_word(1, ptr_addr);
-                if bus.read_byte(1, tile_ptr) == 0x7F {
-                    b = b.wrapping_add(1);
-                }
+                *tile = bus.read_byte(1, tile_ptr);
             }
+            let contact = crate::player::tunnels::DirtContact::from_tiles(tiles);
+            let b = contact.undug_tiles;
             cpu.b = b;
             cpu.set_hl(0x8401);
             let mut s8401 = bus.read_byte(1, 0x8401) & !0x10;
-            if b == 0 {
+            if contact.in_existing_tunnel() {
                 s8401 |= 0x10;
             }
             bus.write_byte(1, 0x8401, s8401);
@@ -1661,11 +1667,10 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (1, 0x1393) => {
-            let dir = bus.read_byte(1, 0x85AE) & 0x0F;
-            if dir != 0x00 && dir != 0x06 {
-                cpu.d = cpu.d.wrapping_add(0x06);
-                cpu.e = cpu.e.wrapping_add(0x06);
-            }
+            let sample = crate::player::tunnels::sampling_position(
+                crate::player::Position { x: cpu.d, y: cpu.e }, bus.read_byte(1, 0x85AE));
+            cpu.d = sample.x;
+            cpu.e = sample.y;
             decomp_populate_4tile_quad(cpu, bus, 1, 0x85D6);
             stats.ghost_dig_ai_calls += 1;
             stats.total_rust_calls += 1;
@@ -1679,11 +1684,10 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         (1, 0x15D3) => {
             cpu.d = bus.read_byte(1, 0x98A2);
             cpu.e = bus.read_byte(1, 0x98A3);
-            let dir = bus.read_byte(1, 0x85AF) & 0x0F;
-            if dir != 0x00 && dir != 0x06 {
-                cpu.d = cpu.d.wrapping_add(0x06);
-                cpu.e = cpu.e.wrapping_add(0x06);
-            }
+            let sample = crate::player::tunnels::sampling_position(
+                crate::player::Position { x: cpu.d, y: cpu.e }, bus.read_byte(1, 0x85AF));
+            cpu.d = sample.x;
+            cpu.e = sample.y;
             decomp_populate_4tile_quad(cpu, bus, 1, 0x85D6);
             stats.ghost_dig_ai_calls += 1;
             stats.total_rust_calls += 1;
@@ -2176,61 +2180,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
 
         // CPU 1 $1136: `step_digdug_2px`
         (1, 0x1136) => {
-            let dir = bus.read_byte(1, 0x85AE);
-            cpu.a = dir;
-            cpu.set_hl(0x98A3);
-            cpu.and8(0x0F);
-            let mut step_mode = 0i8;
-            if cpu.a == 0x00 {
-                step_mode = -1;
-            } else {
-                cpu.sub8(0x04, false, false);
-                if cpu.a == 0x04 {
-                    step_mode = 1;
-                } else {
-                    cpu.set_hl(0x98A2);
-                    cpu.sub8(0x02, false, false);
-                    if cpu.a == 0x02 {
-                        step_mode = 1;
-                    } else {
-                        cpu.sub8(0x06, false, false);
-                        if cpu.a == 0x06 {
-                            step_mode = -1;
-                        }
-                    }
-                }
-            }
-            if step_mode == 1 {
-                let hl = cpu.hl();
-                let v1 = cpu.inc8(bus.read_byte(1, hl));
-                let v2 = cpu.inc8(v1);
-                bus.write_byte(1, hl, v2);
-                cpu.e = bus.read_byte(1, 0x98A3);
-                cpu.d = bus.read_byte(1, 0x98A2);
-                cpu.a = cpu.d;
-                decomp_cpu1_check_playfield_bounds(cpu);
-                cpu.cb_op(0x49, cpu.c);
-                if (cpu.c & 0x02) != 0 {
-                    let v3 = cpu.dec8(bus.read_byte(1, hl));
-                    let v4 = cpu.dec8(v3);
-                    bus.write_byte(1, hl, v4);
-                }
-            } else if step_mode == -1 {
-                let hl = cpu.hl();
-                let v1 = cpu.dec8(bus.read_byte(1, hl));
-                let v2 = cpu.dec8(v1);
-                bus.write_byte(1, hl, v2);
-                cpu.e = bus.read_byte(1, 0x98A3);
-                cpu.d = bus.read_byte(1, 0x98A2);
-                cpu.a = cpu.d;
-                decomp_cpu1_check_playfield_bounds(cpu);
-                cpu.cb_op(0x49, cpu.c);
-                if (cpu.c & 0x02) != 0 {
-                    let v3 = cpu.inc8(bus.read_byte(1, hl));
-                    let v4 = cpu.inc8(v3);
-                    bus.write_byte(1, hl, v4);
-                }
-            }
+            crate::player::legacy::step_two_pixels(cpu, bus);
             stats.ghost_dig_ai_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
@@ -2268,66 +2218,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
 
         // CPU 1 $118F: `enforce_grid_alignment_on_turn`
         (1, 0x118F) => {
-            let saved_hl = cpu.hl();
-            let saved_bc = cpu.bc();
-            cpu.a = bus.read_byte(1, 0x85AE);
-            cpu.and8(0x0F);
-            let is_vert = if cpu.a == 0x00 {
-                true
-            } else {
-                cpu.sub8(0x04, false, false);
-                cpu.a == 0x04
-            };
-            let aligned = if is_vert {
-                cpu.a = bus.read_byte(1, 0x98A2);
-                cpu.and8(0x0F);
-                cpu.sub8(0x01, false, false);
-                cpu.a == 0x01
-            } else {
-                cpu.sub8(0x02, false, false);
-                let is_horiz = if cpu.a == 0x02 {
-                    true
-                } else {
-                    cpu.sub8(0x06, false, false);
-                    cpu.a == 0x06
-                };
-                if !is_horiz {
-                    true
-                } else {
-                    cpu.a = bus.read_byte(1, 0x98A3);
-                    cpu.sub8(0x20, false, false);
-                    if cpu.a >= 0x20 {
-                        cpu.and8(0x0F);
-                        cpu.a == 0x00
-                    } else {
-                        cpu.sub8(0x08, false, false);
-                        cpu.a == 0x08
-                    }
-                }
-            };
-            if !aligned {
-                cpu.a = bus.read_byte(1, 0x85AF);
-                cpu.and8(0x0F);
-                bus.write_byte(1, 0x85AE, cpu.a);
-                cpu.a &= !0x01;
-            } else {
-                cpu.a = bus.read_byte(1, 0x8657);
-                cpu.cb_op(0x4F, cpu.a);
-                if (cpu.a & 0x02) == 0 {
-                    cpu.a = bus.read_byte(1, 0x85AE);
-                    cpu.and8(0x0F);
-                    let cur_dir = cpu.a;
-                    cpu.a = bus.read_byte(1, 0x85AF);
-                    cpu.and8(0x0F);
-                    cpu.sub8(cur_dir, false, false);
-                    if cpu.a != cur_dir {
-                        bus.write_byte(1, 0x85B3, 0x02);
-                    }
-                }
-                cpu.a |= 0x01;
-            }
-            cpu.set_bc(saved_bc);
-            cpu.set_hl(saved_hl);
+            crate::player::legacy::enforce_grid_alignment(cpu, bus);
             stats.ghost_dig_ai_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
@@ -2339,80 +2230,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
 
         // CPU 1 $11EA: `check_rock_collision_ahead`
         (1, 0x11EA) => {
-            cpu.a = bus.read_byte(1, 0x85AE);
-            cpu.set_hl(0x98A2);
-            cpu.set_de(0x85E1);
-            cpu.and8(0x0F);
-            let mut valid_dir = true;
-            if cpu.a == 0x00 {
-                let x = bus.read_byte(1, 0x98A2);
-                bus.write_byte(1, 0x85E1, x);
-                cpu.a = bus.read_byte(1, 0x98A3);
-                cpu.sub8(0x10, false, true);
-                bus.write_byte(1, 0x85E0, cpu.a);
-            } else {
-                cpu.sub8(0x04, false, false);
-                if cpu.a == 0x04 {
-                    let x = bus.read_byte(1, 0x98A2);
-                    bus.write_byte(1, 0x85E1, x);
-                    cpu.a = bus.read_byte(1, 0x98A3);
-                    cpu.add8(0x10, false);
-                    bus.write_byte(1, 0x85E0, cpu.a);
-                } else {
-                    cpu.sub8(0x02, false, false);
-                    if cpu.a == 0x02 {
-                        cpu.a = bus.read_byte(1, 0x98A2);
-                        cpu.add8(0x10, false);
-                        bus.write_byte(1, 0x85E1, cpu.a);
-                        let y = bus.read_byte(1, 0x98A3);
-                        cpu.a = y;
-                        bus.write_byte(1, 0x85E0, y);
-                    } else {
-                        cpu.sub8(0x06, false, false);
-                        if cpu.a == 0x06 {
-                            cpu.a = bus.read_byte(1, 0x98A2);
-                            cpu.sub8(0x10, false, true);
-                            bus.write_byte(1, 0x85E1, cpu.a);
-                            let y = bus.read_byte(1, 0x98A3);
-                            cpu.a = y;
-                            bus.write_byte(1, 0x85E0, y);
-                        } else {
-                            valid_dir = false;
-                        }
-                    }
-                }
-            }
-            if valid_dir {
-                let mut rock_hl = 0x8465u16;
-                cpu.b = 0x08;
-                cpu.set_de(0x0008);
-                let target_x = bus.read_byte(1, 0x85E1);
-                let target_y = bus.read_byte(1, 0x85E0);
-                loop {
-                    cpu.a = target_x;
-                    let rx = bus.read_byte(1, rock_hl);
-                    cpu.sub8(rx, false, false);
-                    if target_x == rx {
-                        cpu.a = target_y;
-                        let ry = bus.read_byte(1, rock_hl.wrapping_add(1));
-                        cpu.sub8(ry, false, false);
-                        if target_y == ry {
-                            cpu.set_hl(0x8401);
-                            let s = bus.read_byte(1, 0x8401) | 0x04;
-                            bus.write_byte(1, 0x8401, s);
-                            break;
-                        }
-                    }
-                    let s = bus.read_byte(1, 0x8401) & !0x04;
-                    bus.write_byte(1, 0x8401, s);
-                    rock_hl = cpu.add16(rock_hl, 0x0008);
-                    cpu.set_hl(rock_hl);
-                    cpu.b = cpu.b.wrapping_sub(1);
-                    if cpu.b == 0 {
-                        break;
-                    }
-                }
-            }
+            crate::player::legacy::check_rock_collision(cpu, bus);
             stats.rock_physics_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
@@ -4843,12 +4661,10 @@ fn decomp_update_monster_sprites<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
 }
 
 fn decomp_pixel_xy_to_tile_addr(cpu: &mut Z80) {
-    let d_shifted = cpu.d.wrapping_sub(0x11) >> 2;
-    let l = (d_shifted >> 1) << 5;
-    let h = d_shifted >> 4;
-    let hl_col = ((h as u16) << 8) | (l as u16);
-    let de_row = (cpu.e >> 3) as u16;
-    let diff = hl_col.wrapping_sub(de_row);
+    let position = crate::player::Position { x: cpu.d, y: cpu.e };
+    let address = crate::player::tunnels::tile_address(position);
+    let h = cpu.d.wrapping_sub(0x11) >> 6;
+    let diff = 0x83A0u16.wrapping_sub(address);
     cpu.set_hl(0x83A0);
     cpu.set_de(diff);
     cpu.f &= !FLAG_C;
@@ -4857,16 +4673,17 @@ fn decomp_pixel_xy_to_tile_addr(cpu: &mut Z80) {
 }
 
 fn decomp_populate_4tile_quad<B: Z80Bus>(cpu: &mut Z80, bus: &mut B, cpu_id: usize, ix: u16) {
+    let tiles = crate::player::tunnels::footprint(crate::player::Position { x: cpu.d, y: cpu.e });
     decomp_pixel_xy_to_tile_addr(cpu);
     cpu.ix = ix;
     let hl = cpu.hl();
-    bus.write_word(cpu_id, ix, hl);
+    bus.write_word(cpu_id, ix, tiles[0]);
     let de = cpu.add16(hl, 0xFFE0);
-    bus.write_word(cpu_id, ix.wrapping_add(2), de);
+    bus.write_word(cpu_id, ix.wrapping_add(2), tiles[1]);
     let hl_plus_1 = hl.wrapping_add(1);
-    bus.write_word(cpu_id, ix.wrapping_add(4), hl_plus_1);
+    bus.write_word(cpu_id, ix.wrapping_add(4), tiles[2]);
     let de_plus_1 = de.wrapping_add(1);
-    bus.write_word(cpu_id, ix.wrapping_add(6), de_plus_1);
+    bus.write_word(cpu_id, ix.wrapping_add(6), tiles[3]);
     cpu.set_hl(hl_plus_1);
     cpu.set_de(de_plus_1);
 }
@@ -5176,11 +4993,7 @@ fn decomp_cpu1_update_digdug_sprite_and_flip<B: Z80Bus>(cpu: &mut Z80, bus: &mut
 }
 
 fn decomp_cpu1_check_playfield_bounds(cpu: &mut Z80) {
-    if cpu.d < 0x11 || cpu.d >= 0xE2 || cpu.e < 0x08 || cpu.e >= 0xF1 {
-        cpu.c |= 0x02;
-    } else {
-        cpu.c &= !0x02;
-    }
+    crate::player::legacy::check_playfield_bounds(cpu);
 }
 
 fn decomp_cpu1_setup_veggie_for_round<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
@@ -6127,9 +5940,7 @@ pub fn step_human_cpu2<B: Z80Bus>(
             12
         }
         _ => {
-            cpu.pc = 0x00B0;
-            cpu.total_cycles += 4;
-            4
+            panic!("Unhandled translated address: cpu2 ${:04X}", cpu.pc);
         }
     }
 }
@@ -10258,7 +10069,7 @@ fn call_cpu_sub<B: Z80Bus>(
     let mut sub_stats = DecompStats::default();
     let ok = try_run_decompiled_subroutine(cpu, bus, roms, &mut sub_stats);
     SUB_STATS_ACCUM.with(|acc| acc.borrow_mut().merge(&sub_stats));
-    debug_assert!(
+    assert!(
         ok,
         "Missing decompiled subroutine (cpu={}, ${:04X})",
         cpu.cpu_id,
@@ -13343,12 +13154,13 @@ pub fn step_human_cpu1<B: Z80Bus>(
             10
         }
 
-        pc => {
+        pc if roms.cpu1.get(pc as usize) == Some(&0xFF) => {
             let ret = pc.wrapping_add(1);
             cpu.push(bus, ret);
             cpu.pc = 0x0038;
             11
         }
+        _ => panic!("Unhandled translated address: cpu1 ${:04X}", cpu.pc),
     };
 
     cpu.instructions_executed += 1;
@@ -13372,7 +13184,7 @@ fn jp_cpu_sub<B: Z80Bus>(
     let mut sub_stats = DecompStats::default();
     let ok = try_run_decompiled_subroutine(cpu, bus, roms, &mut sub_stats);
     SUB_STATS_ACCUM.with(|acc| acc.borrow_mut().merge(&sub_stats));
-    debug_assert!(
+    assert!(
         ok,
         "Missing decompiled subroutine (cpu={}, ${:04X})",
         cpu.cpu_id,
@@ -14593,7 +14405,17 @@ pub fn decomp_service_check_secret_code_3cb3<B: Z80Bus>(
     cpu.ret_subroutine(bus);
 }
 
-/// $3DE3: Runs the 16-pass LFSR RAM self-test over 1 KB at (HL) and clears it to $00.
+// One feedback step mirrors the RAM test's two ADD A,A operations and ADC HL,HL.
+fn advance_ram_test_lfsr(mut seed: u16, steps: usize) -> u16 {
+    for _ in 0..steps {
+        let feedback = (!(seed as u8 ^ (seed >> 8) as u8) >> 6) & 1;
+        seed = (seed << 1) | u16::from(feedback);
+    }
+    seed
+}
+
+/// $3DE3: Summarizes the healthy-RAM path of the 16-pass LFSR test, preserving its
+/// seed progression and final cleared 1 KB bank. Intermediate faulty-RAM behavior is unmodeled.
 pub fn decomp_ram_bank_lfsr_test_3de3<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
     let base = cpu.hl();
     z80_exx(cpu);
@@ -14601,12 +14423,7 @@ pub fn decomp_ram_bank_lfsr_test_3de3<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
     loop {
         cpu.d = cpu.h;
         cpu.e = cpu.l;
-        for _ in 0..0x0400 {
-            let a = !(cpu.h ^ cpu.l);
-            let carry = (a & 0x40) != 0;
-            let next_hl = (cpu.hl() << 1) | (carry as u16);
-            cpu.set_hl(next_hl);
-        }
+        cpu.set_hl(advance_ram_test_lfsr(cpu.hl(), 0x0400));
         cpu.d = cpu.h;
         cpu.e = cpu.l;
         cpu.b = cpu.b.wrapping_sub(1);
@@ -14619,7 +14436,7 @@ pub fn decomp_ram_bank_lfsr_test_3de3<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
         bus.write_byte(0, base.wrapping_add(i), 0x00);
     }
     bus.write_byte(0, 0x6830, 0x00);
-    cpu.a = 0x00;
+    cpu.xor8(cpu.a);
     cpu.set_hl(base.wrapping_add(0x0400));
     cpu.set_de(base.wrapping_add(0x0400));
     cpu.b = 0x00;
@@ -15182,6 +14999,9 @@ fn decomp_vblank_active_gameplay_0654<B: Z80Bus>(
             if bus.read_byte(0, 0x840A) != 0 {
                 if (f8400 & 0x01) != 0 && (bus.read_byte(0, 0x8402) & 0x04) == 0 {
                     decomp_vblank_switch_to_p2_07ee(cpu, bus, roms);
+                    // $080B jumps back to $07C7 after swapping the players' saved
+                    // playfields. Finish the interrupt instead of returning at that JR.
+                    decomp_vblank_continue_next_life_07c7(cpu, bus, roms);
                 } else {
                     decomp_vblank_continue_next_life_07c7(cpu, bus, roms);
                 }
@@ -15745,18 +15565,20 @@ pub fn step_human_cpu0<B: Z80Bus>(
         }
         0x005D..=0x0065 => {
             bus.write_byte(0, 0x6830, cpu.a);
-            let hl = cpu.hl().saturating_sub(16);
+            // Preserve one original iteration, including DEC HL's wraparound. Skipping
+            // iterations changes both the observed registers and the opportunities for NMIs.
+            let hl = cpu.hl().wrapping_sub(1);
             cpu.set_hl(hl);
             cpu.a = cpu.l;
             cpu.or8(cpu.h);
             if hl != 0 {
                 cpu.pc = 0x005D;
-                cpu.total_cycles += 35;
-                35
+                cpu.total_cycles += 39;
+                39
             } else {
                 cpu.ret_subroutine(bus);
-                cpu.total_cycles += 40;
-                40
+                cpu.total_cycles += 44;
+                44
             }
         }
 
@@ -15807,26 +15629,43 @@ pub fn step_human_cpu0<B: Z80Bus>(
             for addr in 0x9800..0x9980u16 {
                 bus.write_byte(0, addr, 0x00);
             }
+            cpu.set_hl(0x9980);
+            cpu.set_bc(0);
             bus.write_byte(0, 0x6823, 0x01);
 
             let d0 = bus.read_byte(0, 0x89D0);
+            cpu.a = d0;
+            cpu.sub8(0, false, false);
             if d0 == 0x00 {
                 cpu.pc = 0x0000;
                 return 100;
             }
+            cpu.sub8(0xFF, false, false);
             if d0 == 0xFF {
+                cpu.a = 0;
                 bus.write_byte(0, 0x87C0, 0x00);
             } else {
+                cpu.set_hl(0x85AB);
                 bus.write_byte(0, 0x85AA, 0x00);
-                bus.write_byte(0, 0x85AB, d0 & 0x0F);
+                cpu.and8(0x0F);
+                bus.write_byte(0, 0x85AB, cpu.a);
                 let d1 = bus.read_byte(0, 0x89D1);
+                cpu.a = d1;
+                cpu.sub8(0xFF, false, false);
                 if d1 == 0xFF {
+                    cpu.a = 1;
                     bus.write_byte(0, 0x87C0, 0x01);
                 } else {
+                    cpu.b = d1;
+                    cpu.set_hl(0x85AD);
                     bus.write_byte(0, 0x85AC, 0x00);
-                    bus.write_byte(0, 0x85AD, d1 & 0x0F);
-                    let mode = if (d1 & 0xF0) == 0x10 { 0x02 } else { 0x03 };
-                    bus.write_byte(0, 0x87C0, mode);
+                    cpu.and8(0x0F);
+                    bus.write_byte(0, 0x85AD, cpu.a);
+                    cpu.a = cpu.b;
+                    cpu.and8(0xF0);
+                    cpu.sub8(0x10, false, false);
+                    cpu.a = if (cpu.f & FLAG_Z) != 0 { 2 } else { 3 };
+                    bus.write_byte(0, 0x87C0, cpu.a);
                 }
             }
             cpu.sp = 0x9A00;
@@ -15843,6 +15682,9 @@ pub fn step_human_cpu0<B: Z80Bus>(
             for addr in 0xA000..0xA004u16 {
                 bus.write_byte(0, addr, 0x00);
             }
+            cpu.xor8(cpu.a);
+            cpu.set_hl(0xA004);
+            cpu.b = 0;
             cpu.push(bus, 0x01D1);
             cpu.pc = 0x005A;
             cpu.total_cycles += 110;
@@ -15885,6 +15727,8 @@ pub fn step_human_cpu0<B: Z80Bus>(
             bus.write_byte(0, 0x87AB, 0x01);
             bus.write_byte(0, 0x9A05, 0x01);
             bus.write_byte(0, 0x6820, 0x01);
+            cpu.a = 1;
+            cpu.set_hl(0x87AB);
             cpu.pc = 0x0238;
             cpu.total_cycles += 1400;
             1400
@@ -15896,6 +15740,7 @@ pub fn step_human_cpu0<B: Z80Bus>(
             cpu.iff2 = true;
             cpu.sp = 0x9A00;
             let f8400 = bus.read_byte(0, 0x8400);
+            cpu.cb_op(0x4E, f8400); // BIT 1,(HL), preserving carry.
             let (score_hl, round_a) = if (f8400 & 0x02) == 0 {
                 (0x8414u16, bus.read_byte(0, 0x840D))
             } else {
@@ -15904,10 +15749,20 @@ pub fn step_human_cpu0<B: Z80Bus>(
             cpu.set_hl(score_hl);
             cpu.b = round_a;
             let cc = bus.read_byte(0, 0x87CC);
+            cpu.a = cc;
+            cpu.cb_op(0x4F, cc); // BIT 1,A
+            if (cc & 0x02) != 0 {
+                cpu.cb_op(0x57, cc); // BIT 2,A
+            }
             if (cc & 0x02) != 0 && (cc & 0x04) == 0 {
+                cpu.a = cpu.b;
+                cpu.push(bus, cpu.hl());
+                cpu.push(bus, cpu.af());
                 call_cpu_sub(cpu, bus, roms, 0x0BF2, 0x0263);
-                cpu.a = round_a;
-                cpu.set_hl(score_hl);
+                let af = cpu.pop(bus);
+                cpu.set_af(af);
+                let hl = cpu.pop(bus);
+                cpu.set_hl(hl);
                 cpu.push(bus, 0x0268);
                 cpu.pc = 0x32F0;
                 cpu.total_cycles += 90;
@@ -15922,6 +15777,7 @@ pub fn step_human_cpu0<B: Z80Bus>(
         0x0268..=0x0271 => {
             bus.write_byte(0, 0xA003, 0x00);
             bus_and(bus, 0x87CC, !0x02);
+            cpu.set_hl(0x87CC);
             cpu.pc = 0x0272;
             cpu.total_cycles += 30;
             30
@@ -15930,6 +15786,8 @@ pub fn step_human_cpu0<B: Z80Bus>(
         // $0272..$027F: Check $87CC bit 0 (render high-score table) and loop to $0238
         0x0272..=0x027F => {
             let cc = bus.read_byte(0, 0x87CC);
+            cpu.set_hl(0x87CC);
+            cpu.cb_op(0x46, cc); // BIT 0,(HL)
             if (cc & 0x01) != 0 {
                 bus.write_byte(0, 0x87CC, cc & !0x01);
                 call_cpu_sub(cpu, bus, roms, 0x35E3, 0x027E);
@@ -16268,10 +16126,11 @@ pub fn step_human_cpu0<B: Z80Bus>(
             cpu.iff1 = false;
             cpu.iff2 = false;
             bus.write_byte(0, 0x7100, 0x10);
+            cpu.xor8(cpu.a);
             bus.write_byte(0, 0x6823, 0x00); // Assert sub_cpu_reset = true
             bus.write_byte(0, 0xA002, 0x00);
             bus.write_byte(0, 0x6820, 0x00);
-            cpu.a = 0xFF;
+            cpu.a = cpu.dec8(cpu.a);
             cpu.pc = 0x388F;
             cpu.total_cycles += 60;
             60
@@ -16279,6 +16138,13 @@ pub fn step_human_cpu0<B: Z80Bus>(
         0x388F..=0x3972 => {
             bus.write_byte(0, 0x7000, 0xFF);
             bus.write_byte(0, 0xB840, 0x04);
+            // The first RAM test advances the seed for 16 passes before the four
+            // bank tests below. Write and verification passes replay the same sequence.
+            let seed = advance_ram_test_lfsr(0, 16 * 0x400);
+            cpu.h_alt = (seed >> 8) as u8;
+            cpu.l_alt = seed as u8;
+            cpu.b_alt = 0;
+            cpu.c_alt = cpu.c;
             for addr in 0x8000..0x8400u16 {
                 bus.write_byte(0, addr, 0x00);
             }
@@ -16310,33 +16176,88 @@ pub fn step_human_cpu0<B: Z80Bus>(
             bus.write_byte(0, 0x6826, 0x01);
             bus.write_byte(0, 0x6827, 0x01);
             bus.write_byte(0, 0x6823, 0x01); // Release CPU 1 & CPU 2 from reset!
+
+            // Preserve the original four program-ROM checksum checks and their final
+            // register state. A bad checksum enters the diagnostic error path.
+            for bank in 0..4u16 {
+                let start = usize::from(bank) * 0x1000;
+                cpu.a = roms.cpu0[start..start + 0x1000].iter()
+                    .fold(0u8, |sum, &value| sum.wrapping_add(value));
+                cpu.set_hl(0x3FFC + bank);
+                cpu.set_de((bank + 1) * 0x1000);
+                cpu.set_bc(0);
+                cpu.sub8(roms.cpu0[usize::from(cpu.hl())], false, false);
+                if (cpu.f & FLAG_Z) == 0 {
+                    cpu.pc = 0x3E65;
+                    cpu.total_cycles += 800;
+                    return 800;
+                }
+            }
+            cpu.set_hl(0x4000);
+            cpu.set_de(0x4000);
+            cpu.set_bc(0x1000);
+            cpu.a = 0x40;
+            cpu.sub8(0x40, false, false);
             cpu.pc = 0x3973;
             cpu.total_cycles += 800;
             800
         }
         0x3973..=0x397F => {
-            bus.write_byte(0, 0x6830, cpu.a);
-            let s0 = bus.read_byte(0, 0x8A00);
-            if s0 != 0 {
-                cpu.pc = if s0 == 0xFF { 0x3980 } else { 0x3E6A };
+            cpu.a = bus.read_byte(0, 0x8A00);
+            cpu.and8(cpu.a);
+            if (cpu.f & FLAG_Z) == 0 {
+                cpu.a = cpu.inc8(cpu.a);
+                if (cpu.f & FLAG_Z) != 0 {
+                    bus.write_byte(0, 0x6830, cpu.a);
+                    cpu.pc = 0x3980;
+                } else {
+                    cpu.pc = 0x3E6A;
+                }
             }
             cpu.total_cycles += 25;
             25
         }
         0x3980..=0x3989 => {
-            bus.write_byte(0, 0x6830, cpu.a);
-            let s1 = bus.read_byte(0, 0x8A01);
-            if s1 != 0 {
-                cpu.pc = if s1 == 0xFF { 0x398A } else { 0x3E6A };
+            cpu.a = bus.read_byte(0, 0x8A01);
+            cpu.and8(cpu.a);
+            if (cpu.f & FLAG_Z) == 0 {
+                cpu.a = cpu.inc8(cpu.a);
+                cpu.pc = if (cpu.f & FLAG_Z) != 0 { 0x398A } else { 0x3E6A };
             }
             cpu.total_cycles += 25;
             25
         }
-        0x398A..=0x39AF => {
+        0x398A..=0x3998 => {
             cpu.set_hl(0x3E9F);
             call_cpu_sub(cpu, bus, roms, 0x36F3, 0x3990);
+            cpu.xor8(cpu.a);
             bus.write_byte(0, 0x8A00, 0x00);
             bus.write_byte(0, 0x8A01, 0x00);
+            cpu.b = 0x10;
+            cpu.pc = 0x3999;
+            cpu.total_cycles += 200;
+            200
+        }
+        0x3999..=0x39A0 => {
+            bus.write_byte(0, 0x6830, cpu.a);
+            cpu.c = cpu.dec8(cpu.c);
+            let cycles = if cpu.c != 0 {
+                cpu.pc = 0x3999;
+                29
+            } else {
+                cpu.b = cpu.b.wrapping_sub(1);
+                if cpu.b != 0 {
+                    cpu.pc = 0x3999;
+                    37
+                } else {
+                    cpu.pc = 0x39A1;
+                    32
+                }
+            };
+            cpu.total_cycles += cycles;
+            cycles as u32
+        }
+        0x39A1..=0x39AF => {
             cpu.set_hl(0x3FE5);
             cpu.set_de(0x7000);
             cpu.set_bc(0x0003);
@@ -16348,29 +16269,42 @@ pub fn step_human_cpu0<B: Z80Bus>(
             200
         }
         0x39B0..=0x39B6 => {
-            if bus.read_byte(0, 0x7100) == 0x10 {
+            cpu.a = bus.read_byte(0, 0x7100);
+            cpu.sub8(0x10, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
                 cpu.pc = 0x39B7;
             }
-            cpu.total_cycles += 25;
-            25
+            let cycles = if (cpu.f & FLAG_Z) != 0 { 27 } else { 32 };
+            cpu.total_cycles += cycles;
+            cycles as u32
         }
         0x39B7..=0x39D2 => {
             for i in 0..9u16 {
                 let b = roms.cpu0[(0x3FEC + i) as usize];
                 bus.write_byte(0, 0x8A18 + i, b);
             }
+            cpu.set_hl(0x3FF5);
+            cpu.set_de(0x8A21);
+            cpu.set_bc(0);
             cpu.im = 1;
+            cpu.xor8(cpu.a);
             bus.write_byte(0, 0x6820, 0x00);
+            cpu.a = cpu.inc8(cpu.a);
             bus.write_byte(0, 0x6820, 0x01);
             cpu.iff1 = true;
             cpu.iff2 = true;
-            cpu.c = bus.read_byte(0, 0x8423).wrapping_add(0x04);
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.add8(4, false);
+            cpu.c = cpu.a;
             cpu.pc = 0x39D3;
             cpu.total_cycles += 120;
             120
         }
         0x39D3..=0x39D8 => {
-            if bus.read_byte(0, 0x8423) == cpu.c {
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.sub8(cpu.c, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
+                cpu.a = 4;
                 bus.write_byte(0, 0x9B3D, 0x04);
                 cpu.pc = 0x39DE;
             }
@@ -16378,15 +16312,27 @@ pub fn step_human_cpu0<B: Z80Bus>(
             25
         }
         0x39DE..=0x39E3 => {
-            if bus.read_byte(0, 0x9B3D) == 0 {
-                cpu.c = bus.read_byte(0, 0x8423);
+            cpu.a = bus.read_byte(0, 0x9B3D);
+            cpu.and8(cpu.a);
+            if (cpu.f & FLAG_Z) != 0 {
+                cpu.a = bus.read_byte(0, 0x8423);
+                cpu.c = cpu.a;
                 cpu.pc = 0x39E8;
             }
             cpu.total_cycles += 25;
             25
         }
-        0x39E4..=0x39ED => {
-            if bus.read_byte(0, 0x8423) != cpu.c {
+        0x39E4..=0x39E7 => {
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.c = cpu.a;
+            cpu.pc = 0x39E8;
+            cpu.total_cycles += 17;
+            17
+        }
+        0x39E8..=0x39ED => {
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.sub8(cpu.c, false, false);
+            if (cpu.f & FLAG_Z) == 0 {
                 cpu.pc = 0x39EE;
             }
             cpu.total_cycles += 25;
@@ -16404,9 +16350,10 @@ pub fn step_human_cpu0<B: Z80Bus>(
             call_cpu_sub(cpu, bus, roms, 0x3C47, 0x3A09);
             call_cpu_sub(cpu, bus, roms, 0x3CB3, 0x3A0C);
 
-            if (bus.read_byte(0, 0x85A7) & 0x80) == 0 {
-                cpu.c = bus.read_byte(0, 0x8423);
-                cpu.pc = 0x39E8;
+            cpu.a = bus.read_byte(0, 0x85A7);
+            cpu.add8(cpu.a, false);
+            if (cpu.f & FLAG_C) == 0 {
+                cpu.pc = 0x39E4;
             } else {
                 cpu.pc = 0x3A12;
             }
@@ -16415,20 +16362,27 @@ pub fn step_human_cpu0<B: Z80Bus>(
         }
         0x3A12..=0x3A1A => {
             call_cpu_sub(cpu, bus, roms, 0x3E85, 0x3A15);
-            cpu.c = bus.read_byte(0, 0x8423).wrapping_add(0x64);
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.add8(0x64, false);
+            cpu.c = cpu.a;
             cpu.pc = 0x3A1B;
             cpu.total_cycles += 120;
             120
         }
         0x3A1B..=0x3A20 => {
-            if bus.read_byte(0, 0x8423) == cpu.c {
+            cpu.a = bus.read_byte(0, 0x8423);
+            cpu.sub8(cpu.c, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
                 cpu.pc = 0x3A21;
             }
             cpu.total_cycles += 25;
             25
         }
         0x3A21..=0x3A2B => {
-            if (bus.read_byte(0, 0x85A7) & 0x80) != 0 {
+            cpu.a = bus.read_byte(0, 0x85A7);
+            cpu.add8(cpu.a, false);
+            if (cpu.f & FLAG_C) != 0 {
+                cpu.a = 1;
                 bus.write_byte(0, 0x9B3D, 0x01);
                 cpu.pc = 0x3A2C;
             }
@@ -16436,7 +16390,9 @@ pub fn step_human_cpu0<B: Z80Bus>(
             25
         }
         0x3A2C..=0x3A32 => {
-            if bus.read_byte(0, 0x9B3D) == 0 {
+            cpu.a = bus.read_byte(0, 0x9B3D);
+            cpu.and8(cpu.a);
+            if (cpu.f & FLAG_Z) != 0 {
                 cpu.iff1 = false;
                 cpu.iff2 = false;
                 cpu.pc = 0x3A33;
@@ -16446,17 +16402,45 @@ pub fn step_human_cpu0<B: Z80Bus>(
         }
         0x3A33..=0x3A3C => {
             bus.write_byte(0, 0x6830, cpu.a);
-            if bus.read_byte(0, 0x7100) == 0x10 {
+            cpu.a = bus.read_byte(0, 0x7100);
+            cpu.sub8(0x10, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
                 cpu.pc = 0x3A3D;
             }
             cpu.total_cycles += 25;
             25
         }
-        0x3A3D..=0x3A5A => {
+        0x3A3D..=0x3A3F => {
+            cpu.set_bc(0x0800);
+            cpu.pc = 0x3A40;
+            cpu.total_cycles += 10;
+            10
+        }
+        0x3A40..=0x3A47 => {
+            bus.write_byte(0, 0x6830, cpu.a);
+            cpu.c = cpu.dec8(cpu.c);
+            let cycles = if cpu.c != 0 {
+                cpu.pc = 0x3A40;
+                29
+            } else {
+                cpu.b = cpu.b.wrapping_sub(1);
+                if cpu.b != 0 {
+                    cpu.pc = 0x3A40;
+                    37
+                } else {
+                    cpu.pc = 0x3A48;
+                    32
+                }
+            };
+            cpu.total_cycles += cycles;
+            cycles as u32
+        }
+        0x3A48..=0x3A5A => {
             cpu.set_hl(0x8A18);
             cpu.set_de(0x7000);
             cpu.set_bc(0x0009);
             z80_exx(cpu);
+            cpu.xor8(cpu.a);
             bus.write_byte(0, 0x7000, 0x00);
             cpu.a = 0xC1;
             bus.write_byte(0, 0x7100, 0xC1);
@@ -16465,7 +16449,9 @@ pub fn step_human_cpu0<B: Z80Bus>(
             120
         }
         0x3A5B..=0x3A61 => {
-            if bus.read_byte(0, 0x7100) == 0x10 {
+            cpu.a = bus.read_byte(0, 0x7100);
+            cpu.sub8(0x10, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
                 cpu.pc = 0x3A62;
             }
             cpu.total_cycles += 25;
@@ -16483,10 +16469,15 @@ pub fn step_human_cpu0<B: Z80Bus>(
             80
         }
         0x3A71..=0x3A84 => {
-            if bus.read_byte(0, 0x7100) == 0x10 {
-                if bus.read_byte(0, 0x8A10) != 0 {
-                    cpu.pc = 0x3A3D;
+            cpu.a = bus.read_byte(0, 0x7100);
+            cpu.sub8(0x10, false, false);
+            if (cpu.f & FLAG_Z) != 0 {
+                cpu.a = bus.read_byte(0, 0x8A10);
+                cpu.and8(cpu.a);
+                if (cpu.f & FLAG_Z) == 0 {
+                    cpu.pc = 0x3A48;
                 } else {
+                    cpu.sub8(0xA0, false, false);
                     cpu.pc = 0x011C;
                 }
             }
@@ -16511,9 +16502,279 @@ pub fn step_human_cpu0<B: Z80Bus>(
         }
 
         _ => {
-            cpu.pc = 0x0238;
-            cpu.total_cycles += 4;
-            4
+            panic!("Unhandled translated address: cpu0 ${:04X}", cpu.pc);
+        }
+    }
+}
+
+#[cfg(test)]
+mod translation_tests {
+    use super::*;
+    use crate::hardware::DigDugBus;
+    use crate::test_support;
+
+    #[test]
+    fn watchdog_delay_advances_one_iteration_and_wraps_like_a_16_bit_counter() {
+        let roms = test_support::roms(&[]);
+        for (initial, expected_hl, expected_a, expected_f, cycles) in [
+            (2, 1, 1, 0, 39),
+            (1, 0, 0, 0x44, 44),
+            (0, 0xFFFF, 0xFF, 0xAC, 39),
+            (0x0100, 0x00FF, 0xFF, 0xAC, 39),
+        ] {
+            let mut bus = DigDugBus::new(roms.clone());
+            let mut cpu = Z80::new(0);
+            cpu.pc = 0x005D;
+            cpu.sp = 0x9A00;
+            cpu.set_hl(initial);
+            bus.write_word(0, cpu.sp, 0x4444);
+            let elapsed = step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!(cpu.hl(), expected_hl);
+            assert_eq!(cpu.a, expected_a);
+            assert_eq!(cpu.f, expected_f);
+            assert_eq!(elapsed, cycles);
+            assert_eq!(cpu.total_cycles, u64::from(cycles));
+            assert_eq!(cpu.pc, if initial == 1 { 0x4444 } else { 0x005D });
+            assert_eq!(cpu.sp, if initial == 1 { 0x9A02 } else { 0x9A00 });
+        }
+    }
+
+    #[test]
+    fn service_delay_preserves_counter_rollover_and_loop_exit() {
+        let roms = test_support::roms(&[]);
+        for (loop_pc, exit_pc) in [(0x3999, 0x39A1), (0x3A40, 0x3A48)] {
+            for (initial_bc, expected_bc, finished, cycles) in [
+                (0x0800, 0x08FF, false, 29),
+                (0x0201, 0x0100, false, 37),
+                (0x0101, 0x0000, true, 32),
+                (0x0001, 0xFF00, false, 37),
+            ] {
+                let mut bus = DigDugBus::new(roms.clone());
+                let mut cpu = Z80::new(0);
+                cpu.pc = loop_pc;
+                cpu.a = 0x47;
+                cpu.set_bc(initial_bc);
+                assert_eq!(step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new()), cycles);
+                assert_eq!(cpu.bc(), expected_bc);
+                assert_eq!(cpu.pc, if finished { exit_pc } else { loop_pc });
+                assert_eq!(cpu.a, 0x47);
+            }
+        }
+    }
+
+    fn assert_cpu0_boundary_matches_rom(roms: &DigDugRoms, pre: &Z80, bus: &DigDugBus) {
+        assert_cpu0_boundary_matches_rom_with_budget(roms, pre, bus, 100_000);
+    }
+
+    fn assert_cpu0_boundary_matches_rom_with_budget(roms: &DigDugRoms, pre: &Z80, bus: &DigDugBus, budget: u64) {
+        let mut post = pre.clone();
+        let mut post_bus = bus.clone();
+        step_human_cpu0(&mut post, &mut post_bus, roms, &mut DecompStats::new());
+        let mut log = crate::verify::VerifyLog::new(budget);
+        log.check(1, "boundary regression", pre, bus, &post, &post_bus);
+        let differences: Vec<_> = log.mismatches.values().flat_map(|m| {
+            m.reg_example.iter().chain(&m.state_example)
+        }).collect();
+        assert!(log.checked == 1 && log.mismatches.is_empty(),
+            "cpu0 ${:04X}, A={:02X} F={:02X} BC={:04X}: {:?}; timeouts={:?}; unsupported={:?}",
+            pre.pc, pre.a, pre.f, pre.bc(), differences, log.timeouts, log.unsupported);
+    }
+
+    fn boundary_cpu(pc: u16) -> Z80 {
+        let mut cpu = Z80::new(0);
+        cpu.pc = pc;
+        cpu.sp = 0x9A00;
+        cpu.a = 0x5A;
+        cpu.set_bc(0xA7C3);
+        cpu.set_de(0x2345);
+        cpu.set_hl(0x1234);
+        cpu.i = 0x63;
+        cpu.iff1 = true;
+        cpu.iff2 = true;
+        cpu
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn cpu0_polling_and_setup_boundaries_match_rom_in_both_branches() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        let base = DigDugBus::new(roms.clone());
+        for pc in [0x387E, 0x3973, 0x3980, 0x398A, 0x3999, 0x39A1,
+            0x39B0, 0x39B7, 0x39D3, 0x39DE, 0x39E4, 0x39E8,
+            0x3A1B, 0x3A21, 0x3A2C, 0x3A33, 0x3A3D, 0x3A40, 0x3A48, 0x3A5B, 0x3A62, 0x3A71] {
+            for command in [0x10, 0xB1] {
+                for value in [0, 1, 0x10, 0x80, 0xFF] {
+                    for c in [0, 1, 0xFF] {
+                        let mut bus = base.clone();
+                        bus.namco_command = command;
+                        bus.write_byte(0, 0x8423, value);
+                        bus.write_byte(0, 0x9B3D, value);
+                        bus.write_byte(0, 0x85A7, value);
+                        bus.write_byte(0, 0x8A10, value);
+                        bus.write_byte(0, 0x8A00, value);
+                        bus.write_byte(0, 0x8A01, value);
+                        let mut cpu = boundary_cpu(pc);
+                        cpu.c = c;
+                        assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+                    }
+                }
+            }
+        }
+        for hl in [0, 1, 2, 16, 0x100, 0x6000, 0xFFFF] {
+            let mut cpu = boundary_cpu(0x005D);
+            cpu.set_hl(hl);
+            let mut bus = base.clone();
+            bus.write_word(0, cpu.sp, 0x4444);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn cpu0_dip_and_foreground_boundaries_match_rom() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        let base = DigDugBus::new(roms.clone());
+        for d0 in [0, 2, 0xFF] {
+            for d1 in [0, 0x1B, 0x2F, 0xFF] {
+                let mut bus = base.clone();
+                bus.write_byte(0, 0x89D0, d0);
+                bus.write_byte(0, 0x89D1, d1);
+                assert_cpu0_boundary_matches_rom(&roms, &boundary_cpu(0x011C), &bus);
+            }
+        }
+        for pc in [0x01BA, 0x01D1, 0x0238, 0x0268, 0x0272, 0x177C, 0x17AE] {
+            for player in [0, 2] {
+                for cc in [0, 1, 2, 3, 4, 6, 0xFF] {
+                    for flags in [0, 1, 0xFF] {
+                        let mut bus = base.clone();
+                        bus.write_byte(0, 0x8400, player);
+                        bus.write_byte(0, 0x840D, 3);
+                        bus.write_byte(0, 0x840E, 7);
+                        bus.write_byte(0, 0x87CC, cc);
+                        bus.write_word(0, 0x8900, 0x8800);
+                        bus.write_word(0, 0x8902, 0x8800);
+                        let mut cpu = boundary_cpu(pc);
+                        cpu.f = flags;
+                        assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn cpu0_large_self_test_boundaries_and_checksum_error_match_rom() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for corrupt_bank in [None, Some(0), Some(1), Some(2), Some(3)] {
+            let mut input = roms.clone();
+            if let Some(bank) = corrupt_bank {
+                // Change only this test's in-memory reference input, not the user's files.
+                input.cpu0[bank * 0x1000] ^= 1;
+            }
+            let bus = DigDugBus::new(input.clone());
+            assert_cpu0_boundary_matches_rom_with_budget(&input, &boundary_cpu(0x388F), &bus, 10_000_000);
+        }
+        for flags in [0, FLAG_C] {
+            let mut cpu = boundary_cpu(0x3DE3);
+            cpu.f = flags;
+            cpu.set_hl(0x8400);
+            cpu.h_alt = 0x72;
+            cpu.l_alt = 0xA3;
+            let mut bus = DigDugBus::new(roms.clone());
+            bus.write_word(0, cpu.sp, 0x4444);
+            assert_cpu0_boundary_matches_rom_with_budget(&roms, &cpu, &bus, 2_000_000);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn cpu0_frame_handler_matches_rom_through_coin_start_and_round_initialization() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        let mut machine = crate::hardware::DigDugMachine::new_unbooted(roms.clone());
+        for frame in 0..400 {
+            machine.bus.buttons = match frame {
+                260..=265 => crate::hardware::INPUT_COIN,
+                326..=331 => crate::hardware::INPUT_START1,
+                _ => 0,
+            };
+            if machine.bus.irq_enable[0] {
+                let mut cpu = machine.cpus[0].clone();
+                let mut bus = machine.bus.clone();
+                if cpu.trigger_irq(&mut bus) {
+                    step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+                    assert_eq!(cpu.pc, 0x0280);
+                    assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+                }
+            }
+            machine.run_frame();
+        }
+    }
+
+    #[test]
+    fn snapshot_uses_active_flag_independently_of_mode_and_reserve_lives() {
+        for (flags, round, lives, expected) in [
+            (0x40, 1, 0, true),  // One-player game on its last life.
+            (0x43, 2, 0, true),  // Player 2 is active.
+            (0x01, 1, 0, false), // Two-player mode retained after game over.
+            (0x00, 1, 3, false), // Stale round/lives on the title screen.
+        ] {
+            let mut ram = [0; 0x2000];
+            ram[0x400] = flags;
+            ram[0x40D] = round;
+            ram[0x40A] = lives;
+            let snapshot = GameStateSnapshot::from_shared_ram(&ram, 0);
+            assert_eq!(snapshot.in_game, expected, "flags=${flags:02X}");
+        }
+    }
+
+    #[test]
+    fn unknown_addresses_trap_on_every_cpu() {
+        for cpu_id in 0..3 {
+            let roms = test_support::roms(&[]);
+            let mut bus = DigDugBus::new(roms.clone());
+            let mut cpu = Z80::new(cpu_id);
+            cpu.pc = 0x4000;
+            let mut stats = DecompStats::new();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match cpu_id {
+                    0 => step_human_cpu0(&mut cpu, &mut bus, &roms, &mut stats),
+                    1 => step_human_cpu1(&mut cpu, &mut bus, &roms, &mut stats),
+                    _ => step_human_cpu2(&mut cpu, &mut bus, &roms, &mut stats),
+                };
+            }));
+            assert!(result.is_err(), "cpu{cpu_id} silently accepted an unknown PC");
+        }
+    }
+
+    #[test]
+    fn cpu1_only_treats_actual_ff_padding_as_restart() {
+        let mut roms = test_support::roms(&[]);
+        roms.cpu1[0x1FFF] = 0xFF;
+        let mut bus = DigDugBus::new(roms.clone());
+        let mut cpu = Z80::new(1);
+        cpu.pc = 0x1FFF;
+        cpu.sp = 0x9A80;
+        step_human_cpu1(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+        assert_eq!(cpu.pc, 0x0038);
+        assert_eq!(cpu.pop(&mut bus), 0x2000);
+    }
+
+    #[test]
+    fn missing_nested_translations_trap_in_all_build_profiles() {
+        for jump in [false, true] {
+            let roms = test_support::roms(&[]);
+            let mut bus = DigDugBus::new(roms.clone());
+            let mut cpu = Z80::new(0);
+            cpu.sp = 0x9A00;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if jump {
+                    jp_cpu_sub(&mut cpu, &mut bus, &roms, 0x4000);
+                } else {
+                    call_cpu_sub(&mut cpu, &mut bus, &roms, 0x4000, 0x1234);
+                }
+            }));
+            assert!(result.is_err(), "missing nested translation was silently accepted");
         }
     }
 }

@@ -1,8 +1,8 @@
-# Dig Dug (1982) — Rust Decompilation & Arcade Hardware Implementation
+# Dig Dug (1982) — Native Rust Port & Reverse Engineering
 
-A reverse-engineering and native Rust decompilation of Namco's **Dig Dug** (1982, Rev 2) triple-Z80 arcade hardware.
+A native Rust translation of Namco's **Dig Dug** (1982, Rev 2), paired with an implementation of its triple-Z80 arcade hardware interfaces.
 
-All executable code across all three Z80 processors (`CPU 0` Main Game, `CPU 1` Monster & Sprite AI, and `CPU 2` Sound Sequencer) has been translated into Rust ([`src/decomp.rs`](src/decomp.rs)) and paired with Namco custom silicon emulation (`06XX`, `51XX`, `53XX`, non-volatile `ER2055` high-score EAROM, and 120 Hz 3-channel Namco WSG wavetable audio).
+The gameplay path executes translated Rust routines in [`src/decomp.rs`](src/decomp.rs), using the original register and memory layouts. Hardware support includes Namco `06XX`/`51XX`/`53XX` I/O, ER2055 high-score EAROM state, video, and Namco WSG audio. The project targets a native port; rebuilding the original ROM binary is outside its scope. Translation completeness and full hardware equivalence have not been established.
 
 <p align="center">
   <img src="docs/screenshot_arcade.png" alt="Dig Dug Arcade Window" width="380" />
@@ -58,45 +58,44 @@ roms/extracted/
 └── 136007.113   (  32 bytes) - Master 32-Entry RGB Resistor-Network Palette PROM
 ```
 
-Even though all Z80 program logic runs natively in Rust, these files are read at startup for sprite/tile bitmaps, color PROM lookup tables, WSG audio waveforms, and stage/music data tables.
+Normal gameplay executes Rust functions. These files remain necessary for sprite/tile bitmaps, color PROM lookup tables, WSG audio waveforms, stage/music data tables, and startup checks. The differential verifier also reads program ROM bytes as its reference input.
 
 ---
 
 ## Building & Running
 
 ### Run the Arcade Cabinet Window
+
 ```powershell
-cargo run --release --bin digdug
+cargo run --locked --release --bin digdug
 ```
 *(Once built, you can also double-click `target\release\digdug.exe` directly in Windows Explorer.)*
 
-### Run Automated Headless Verification
-Simulates 700 frames of coin insertion, 1P start, opening fanfare, tunnel digging, harpoon firing, and 120 Hz dual-tick WSG audio verification:
-```powershell
-cargo run --release --bin digdug -- --headless-test
+### Check a change
+
+The normal tests use synthetic data and need no arcade ROMs:
+
+```sh
+cargo test --locked --all-targets
 ```
 
-### Run 1:1 ROM Differential Verification Harness
-Cross-checks every decompiled Rust routine against an independent reference Z80 CPU interpreter running the original 1982 arcade ROM bytes in lockstep:
-```powershell
-cargo run --release --bin verify_decomp -- --frames 2000 --script tools/mame/inputscript.txt
+With your own ROMs installed, run the gameplay and translation regressions:
+
+```sh
+cargo test --locked --release --all-targets -- --include-ignored
 ```
 
----
+A quick game smoke check is also available:
 
-## Differential Verification Engine
+```sh
+cargo run --locked --release --bin digdug -- --headless-test
+```
 
-To ensure mathematical 1:1 fidelity with original Namco hardware rather than relying solely on visual inspection, this repository includes an automated differential verification engine:
-
-1. **Independent Reference Z80 Interpreter ([`src/z80_ref.rs`](src/z80_ref.rs)):**
-   - An independent ground-truth Z80 CPU emulator executing the original 1982 ROM machine code.
-   - Computes standard architectural flags (`SZ53P`, DAA, 16-bit ALU, IX/IY index math, CB/ED/DD/FD opcode pages).
-2. **Step-by-Step State Verifier ([`src/verify.rs`](src/verify.rs) & [`src/bin/verify_decomp.rs`](src/bin/verify_decomp.rs)):**
-   - Snapshots the full CPU and bus state before each routine executes, runs the decompiled Rust translation, runs the reference Z80 interpreter against the ROM bytes, and compares resulting memory and registers.
-   - **Dead-Stack Filtering:** Filters out dead return addresses below `SP` to prevent false positives from stack frame differences between Rust functions and Z80 `CALL`/`RET`.
-   - **Onward Liveness Analysis:** If scratch registers (`A`, `F`, `HL`) differ upon function exit, the harness simulates 20,000 onward instructions from both states to prove whether the difference propagates into memory/branches (`REG-PROPAGATES`) or is benign dead scratch state (`REG-BENIGN`).
-3. **MAME Reference Alignment ([`tools/mame/`](tools/mame/)):**
-   - Trace scripts comparing Namco `51XX` and `53XX` custom I/O MCU commands, fire button edge detection, and bus timings against real chip microcode in MAME.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development, the
+[player code guide](docs/PLAYER_SYSTEM.md) for the extracted rules, and the
+[optional routine verifier](docs/VERIFICATION.md) for investigating translation
+errors. Passing these checks does not establish complete arcade accuracy.
+See the [known limitations](docs/KNOWN_ISSUES.md) for unresolved timing and coverage.
 
 ---
 
@@ -106,9 +105,10 @@ To ensure mathematical 1:1 fidelity with original Namco hardware rather than rel
 | :--- | :--- |
 | [`src/main.rs`](src/main.rs) | Window creation, keyboard input polling, 60 Hz frame pacing, and `--headless-test` runner |
 | [`src/hardware.rs`](src/hardware.rs) | Triple-CPU scheduler (`CPU 0`, `CPU 1`, `CPU 2`), shared 8 KB RAM (`$8000-$9FFF`), and Namco `06XX`/`51XX`/`53XX` custom I/O chips |
-| [`src/decomp.rs`](src/decomp.rs) | Human-decompiled Rust implementations of all CPU 0, CPU 1, and CPU 2 routines (`step_human_cpu0`, `step_human_cpu1`, `step_human_cpu2`) and `GameStateSnapshot` |
+| [`src/decomp.rs`](src/decomp.rs) | Translated CPU 0, CPU 1, and CPU 2 routines (`step_human_cpu0`, `step_human_cpu1`, `step_human_cpu2`) and `GameStateSnapshot` |
+| [`src/player.rs`](src/player.rs) | Directions, positions, turns, two-pixel movement, bounds and rock probes; [`src/player/tunnels.rs`](src/player/tunnels.rs) handles tile sampling/contact and [`src/player/legacy.rs`](src/player/legacy.rs) preserves the processor boundary |
 | [`src/verify.rs`](src/verify.rs) | Differential verification comparator, dead-stack filter, and onward liveness analyzer |
-| [`src/z80_ref.rs`](src/z80_ref.rs) | Independent reference Z80 CPU interpreter for 1:1 ROM execution verification |
+| [`src/z80_ref.rs`](src/z80_ref.rs) | Separate Z80 interpreter used for bounded differential checks |
 | [`src/bin/verify_decomp.rs`](src/bin/verify_decomp.rs) | Differential verification CLI driver with scripted input playback |
 | [`src/video.rs`](src/video.rs) | Upright `224x288` CRT scanline renderer (36x28 tilemap + 64 hardware sprites in `16x16`/`32x32` flip modes), top control bar, and `[Tab]` hardware/memory inspector |
 | [`src/audio.rs`](src/audio.rs) | Real-time 44.1 kHz 3-channel Namco WSG wavetable synthesizer driven by dual 120 Hz sub-frame register snapshots |
