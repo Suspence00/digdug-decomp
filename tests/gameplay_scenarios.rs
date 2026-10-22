@@ -162,6 +162,41 @@ fn start_buttons_during_gameplay_preserve_the_remaining_credit() {
 
 #[test]
 #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+fn fire_taps_holds_and_releases_launch_only_qualified_shots() {
+    let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted")).unwrap();
+    let mut machine = DigDugMachine::new_unbooted(roms);
+    let script: Vec<u8> = include_str!("../tools/mame/fire_qualification.txt").lines()
+        .map(|line| line.split('#').next().unwrap().trim())
+        .filter(|line| !line.is_empty())
+        .flat_map(|line| {
+            let mut fields = line.split_whitespace();
+            let buttons = u8::from_str_radix(fields.next().unwrap(), 16).unwrap();
+            let frames: usize = fields.next().unwrap().parse().unwrap();
+            std::iter::repeat(buttons).take(frames)
+        }).collect();
+    let mut shots = Vec::new();
+    let mut previously_active = false;
+    for frame in 1..=1520 {
+        let buttons = if frame >= 700 { script.get(frame - 700).copied().unwrap_or(0) } else { 0 };
+        run(&mut machine, buttons, 1);
+        if frame >= 1379 {
+            let s = machine.snapshot();
+            assert!(s.in_game && !s.attract_demo && s.p1_lives == 2,
+                "fire replay must remain in the same live game: frame {frame}: {s:?}");
+            if s.harpoon_active && !previously_active { shots.push(frame); }
+            previously_active = s.harpoon_active;
+        }
+    }
+    // Independent MAME gameplay: the one-frame tap fires nothing; a two-frame
+    // press and a long hold each fire once. A one-frame release cannot rearm,
+    // while a two-frame release permits one new shot. No game RAM is patched.
+    assert_eq!(shots, [1403, 1425, 1464]);
+    assert!(!machine.snapshot().harpoon_active, "the final shot must finish");
+    assert_eq!(machine.bus.namco_credit, 1, "shooting must preserve the spare credit");
+}
+
+#[test]
+#[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
 fn two_players_alternate_after_deaths_and_finish_then_start_a_fresh_game() {
     let mut machine = cabinet();
     start(&mut machine, true);

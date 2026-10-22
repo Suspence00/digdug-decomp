@@ -1,0 +1,21 @@
+# Natural gameplay fire replay. Default script start: frame 700.
+# Bits: 02 RIGHT, 10 FIRE, 20 START1, 40 COIN.
+00 60
+40 6
+00 20
+40 6
+00 34
+20 6
+00 503
+02 40      # frames 1335..1374: move into a playable firing position.
+00 5
+10 1       # frame 1380: held input is visible, but no qualified press or shot.
+00 20
+10 2       # frames 1401..1402: qualified press, one shot.
+00 20
+10 30      # frames 1423..1452: holding fire produces one shot, not auto-fire.
+00 1       # frame 1453: a one-frame release must not rearm the press edge.
+10 6       # frames 1454..1459: no new edge or shot.
+00 2       # frames 1460..1461: qualified release rearms the press edge.
+10 6       # frames 1462..1467: one new qualified press and shot.
+00 40

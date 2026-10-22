@@ -6,9 +6,9 @@
   Coin/start acceptance now also matches the measured replays. Boot self-tests
   remain substantially faster, and setup-state and movement differences remain.
   Unaudited routines and the 06XX timer retain approximate scheduling.
-- **Custom I/O is a limited model.** Coin/start press and release qualification
+- **Custom I/O is a limited model.** Coin/start and credit-mode fire qualification
   and start-credit gating have independent reference checks. General 51XX MCU
-  execution, coinage ratios, fire-edge qualification and arbitrary data-command
+  execution, coinage ratios, raw-mode fire qualification and arbitrary data-command
   mode changes are not implemented. See [input model limits](NAMCO_INPUTS.md).
 - **Coverage is incomplete.** Focused checks cover startup, movement, deaths,
   player handoffs and selected transitions. They do not establish every input

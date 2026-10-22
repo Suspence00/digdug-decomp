@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::decomp::{
     step_human_cpu0, step_human_cpu1, step_human_cpu2, DecompStats, GameStateSnapshot,
 };
-use crate::namco51::CoinStartInputs;
+use crate::namco51::Namco51Inputs;
 use crate::rom::DigDugRoms;
 use crate::timing::{CyclePacer, CPU_STEPS_PER_FRAME};
 use crate::z80::{Z80, Z80Bus};
@@ -48,10 +48,10 @@ pub struct DigDugBus {
     pub namco_mode: u8,
     pub namco_nmi_counter: u8,
     pub namco_credit: u8,
-    /// Frame-qualified coin/start inputs, separate from raw movement/fire reads.
-    pub(crate) coin_start_inputs: CoinStartInputs,
+    /// Frame-qualified coin/start presses and fire edges; held fire stays raw.
+    pub(crate) namco_inputs: Namco51Inputs,
 
-    /// Live controller button bitmask and 3-read history for edge detection
+    /// Live controller bitmask and legacy raw/switch-mode fire history.
     pub buttons: u8,
     pub keymask_d: [u8; 3],
 
@@ -78,7 +78,7 @@ impl DigDugBus {
             namco_mode: 0,
             namco_nmi_counter: 0,
             namco_credit: 0,
-            coin_start_inputs: CoinStartInputs::default(),
+            namco_inputs: Namco51Inputs::default(),
             buttons: 0,
             keymask_d: [0; 3],
             trace: None,
@@ -105,7 +105,7 @@ impl DigDugBus {
         } else if self.namco_command & 0x11 == 0x01 {
             // 06XX selects the 51XX in write mode. Its data commands, rather
             // than the transfer clock divider, enable or disable start credit.
-            self.coin_start_inputs.write_data(val);
+            self.namco_inputs.write_data(val);
         }
     }
 
@@ -128,25 +128,33 @@ impl DigDugBus {
             self.keymask_d[1] = self.keymask_d[0];
             self.keymask_d[0] = keymask;
 
-            let presses = self.coin_start_inputs.take_presses();
+            self.namco_inputs.begin_fire_packet();
+            let presses = self.namco_inputs.take_coin_start_presses();
             if self.namco_mode == 0 {
                 if presses & INPUT_COIN != 0 && self.namco_credit < 99 {
                     self.namco_credit += 1;
                 }
-                if self.coin_start_inputs.starts_enabled {
+                if self.namco_inputs.starts_enabled {
                     if presses & INPUT_START1 != 0 && self.namco_credit > 0 {
                         self.namco_credit -= 1;
-                        self.coin_start_inputs.disable_starts();
+                        self.namco_inputs.disable_starts();
                     } else if presses & INPUT_START2 != 0 && self.namco_credit >= 2 {
                         self.namco_credit -= 2;
-                        self.coin_start_inputs.disable_starts();
+                        self.namco_inputs.disable_starts();
                     }
                 }
             }
         }
 
-        // Single-read rising edge for Namco 51XX fire button press detection
-        let keymask_p = (self.keymask_d[0] ^ self.keymask_d[1]) & self.keymask_d[0];
+        // Credit-mode fire edges use the frame clock and remain stable within
+        // a host packet. Raw/switch-mode fire retains its existing read history.
+        let keymask_p = if self.namco_mode != 0 {
+            (self.keymask_d[0] ^ self.keymask_d[1]) & self.keymask_d[0]
+        } else if self.namco_inputs.fire_pressed() {
+            INPUT_FIRE
+        } else {
+            0
+        };
 
         match self.namco_command {
             0x71 => {
@@ -282,7 +290,7 @@ impl Z80Bus for DigDugBus {
                         self.namco_command = 0;
                         self.namco_mode = 0;
                         self.namco_nmi_counter = 0;
-                        self.coin_start_inputs.reset();
+                        self.namco_inputs.reset();
                     }
                 }
             }
@@ -427,14 +435,14 @@ impl DigDugMachine {
         self.frame_count += 1;
         self.decomp.calls_this_frame = 0;
 
-        // The 51XX qualifies coin/start switches on its VBlank clock. Repeated
+        // The 51XX qualifies press edges on its VBlank clock. Repeated
         // host reads in one frame must not turn a short pulse into a valid press.
         if self.bus.sub_cpu_reset {
-            self.bus.coin_start_inputs.reset();
+            self.bus.namco_inputs.reset();
         } else {
-            self.bus.coin_start_inputs.sample_frame(self.bus.buttons);
+            self.bus.namco_inputs.sample_frame(self.bus.buttons);
             if self.bus.namco_mode != 0 {
-                self.bus.coin_start_inputs.clear_presses();
+                self.bus.namco_inputs.clear_coin_start_presses();
             }
         }
 
@@ -521,7 +529,7 @@ mod tests {
 
     fn poll_credit_frame(bus: &mut DigDugBus, buttons: u8) -> u8 {
         bus.buttons = buttons;
-        bus.coin_start_inputs.sample_frame(buttons);
+        bus.namco_inputs.sample_frame(buttons);
         bus.read_byte(0, 0x7000)
     }
 
@@ -563,6 +571,35 @@ mod tests {
         for _ in 0..2 { poll_credit_frame(&mut bus, 0); }
         poll_credit_frame(&mut bus, INPUT_START2);
         assert_eq!(poll_credit_frame(&mut bus, INPUT_START2), 0);
+    }
+
+    #[test]
+    fn credit_mode_fire_qualifies_presses_but_reports_held_fire_immediately() {
+        let mut bus = credit_bus();
+        let fire_bits = |bus: &mut DigDugBus| bus.read_byte(0, 0x7001) & 0x30;
+        poll_credit_frame(&mut bus, INPUT_FIRE);
+        for _ in 0..100 {
+            assert_eq!(fire_bits(&mut bus), 0x10, "held fire is immediate, press edge is unqualified");
+            bus.read_byte(0, 0x7000);
+        }
+        poll_credit_frame(&mut bus, 0);
+        assert_eq!(fire_bits(&mut bus), 0x30, "one-frame tap must not become a shot");
+        poll_credit_frame(&mut bus, INPUT_FIRE);
+        assert_eq!(fire_bits(&mut bus), 0x10);
+        poll_credit_frame(&mut bus, INPUT_FIRE);
+        for _ in 0..100 {
+            assert_eq!(fire_bits(&mut bus), 0, "qualified edge is stable within this packet");
+        }
+        bus.read_byte(0, 0x7000);
+        assert_eq!(fire_bits(&mut bus), 0x10, "next packet cannot repeat an edge");
+        for buttons in [0, INPUT_FIRE, INPUT_FIRE, INPUT_FIRE] {
+            poll_credit_frame(&mut bus, buttons);
+            assert_ne!(fire_bits(&mut bus) & 0x10, 0, "one-frame release cannot rearm fire");
+        }
+        for buttons in [0, 0, INPUT_FIRE] { poll_credit_frame(&mut bus, buttons); }
+        assert_eq!(fire_bits(&mut bus), 0x10);
+        poll_credit_frame(&mut bus, INPUT_FIRE);
+        assert_eq!(fire_bits(&mut bus), 0, "qualified release and press permit another shot");
     }
 
     #[test]
