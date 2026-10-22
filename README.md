@@ -96,6 +96,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development, the
 [optional routine verifier](docs/VERIFICATION.md) for investigating translation
 errors. Passing these checks does not establish complete arcade accuracy.
 See the [known limitations](docs/KNOWN_ISSUES.md) for unresolved timing and coverage.
+The [MAME frame timeline](docs/MAME_TIMELINE.md) measures boot and gameplay timing
+against an independently running reference machine.
 
 ---
 

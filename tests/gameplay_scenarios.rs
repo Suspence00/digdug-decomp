@@ -71,6 +71,41 @@ fn assert_next_vblank_matches_rom(machine: &DigDugMachine) {
 
 #[test]
 #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+fn initial_round_keeps_mame_duration_relative_to_accepted_start() {
+    let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted"))
+        .expect("install your own Dig Dug Rev 2 ROMs in roms/extracted");
+    let mut machine = DigDugMachine::new_unbooted(roms);
+    let (mut accepted, mut round_init, mut spawned) = (None, None, None);
+    // Same physical input frames as the independent MAME replay. No game RAM
+    // is patched. Compare durations from accepted start, so MCU input latency
+    // cannot hide an accelerated watchdog or initialization fill.
+    for frame in 1..=900 {
+        let buttons = match frame {
+            760..=765 => INPUT_COIN,
+            826..=831 => INPUT_START1,
+            _ => 0,
+        };
+        run(&mut machine, buttons, 1);
+        let s = machine.snapshot();
+        if s.in_game && !s.attract_demo {
+            accepted.get_or_insert(frame);
+            let flags = machine.bus.shared_ram[0x400];
+            if flags & 0x80 != 0 { round_init.get_or_insert(frame); }
+            if flags & 0x30 == 0x30 && s.active_enemies > 0 {
+                spawned.get_or_insert(frame);
+                break;
+            }
+        }
+    }
+    let accepted = accepted.expect("start must be accepted");
+    // MAME 0.289: round initialization begins 26 frames after accepted start;
+    // entities spawn 29 frames after it (see docs/MAME_TIMELINE.md).
+    assert_eq!(round_init.expect("round initialization must begin") - accepted, 26);
+    assert_eq!(spawned.expect("entities must spawn") - accepted, 29);
+}
+
+#[test]
+#[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
 fn two_players_alternate_after_deaths_and_finish_then_start_a_fresh_game() {
     let mut machine = cabinet();
     start(&mut machine, true);

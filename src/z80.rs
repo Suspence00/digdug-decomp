@@ -62,6 +62,10 @@ pub struct Z80 {
     pub im: u8,
     pub halted: bool,
     pub total_cycles: u64,
+    /// Cumulative T-states for translated blocks whose duration has been audited.
+    /// Scheduling metadata, not an architectural register. Other blocks still use
+    /// the legacy step budget; `total_cycles` also includes approximate costs.
+    pub audited_cycles: u64,
     pub instructions_executed: u64,
 }
 
@@ -96,6 +100,7 @@ impl Z80 {
             im: 0,
             halted: false,
             total_cycles: 0,
+            audited_cycles: 0,
             instructions_executed: 0,
         }
     }

@@ -4,6 +4,10 @@ The existing verifier is a diagnostic for translation errors. It runs the native
 Rust step and a separate Z80 interpreter from the same initial state, then compares
 their endpoints. It requires your own supported ROMs in `roms/extracted`.
 
+For an independent whole-machine timing reference, use the
+[MAME frame timeline](MAME_TIMELINE.md). It compares boot and gameplay milestones
+under the same reset, DIP, initial EAROM and scripted input conditions.
+
 ```sh
 cargo run --locked --release --bin verify_decomp -- --frames 2000 --script tools/mame/inputscript.txt --strict-registers
 ```

@@ -4,6 +4,7 @@ use crate::decomp::{
     step_human_cpu0, step_human_cpu1, step_human_cpu2, DecompStats, GameStateSnapshot,
 };
 use crate::rom::DigDugRoms;
+use crate::timing::{CyclePacer, CPU_STEPS_PER_FRAME};
 use crate::z80::{Z80, Z80Bus};
 
 pub const INPUT_UP: u8 = 0x01;
@@ -18,9 +19,9 @@ pub const INPUT_START2: u8 = 0x80;
 const NAMCO_NMI_DELAY: u8 = 30;
 
 // 3 lives, bonus at 20K & 60K, 1 coin 1 credit
-const DIGDUG_DIP_A: u8 = 0b0100_0000 | 0b0010_0000 | 0b0000_0110;
+pub const DIGDUG_DIP_A: u8 = 0b0100_0000 | 0b0010_0000 | 0b0000_0110;
 // 1 coin 1 credit, Demo Sounds ON, Allow Continue, Easy difficulty
-const DIGDUG_DIP_B: u8 = 0b1100_0000 | 0b0001_0000 | 0b0000_1000 | 0b0000_0011;
+pub const DIGDUG_DIP_B: u8 = 0b1100_0000 | 0b0001_0000 | 0b0000_1000 | 0b0000_0011;
 
 #[derive(Clone)]
 pub struct DigDugBus {
@@ -314,6 +315,7 @@ pub struct DigDugMachine {
     pub decomp: DecompStats,
     pub frame_count: u64,
     prev_sub_reset: bool,
+    cpu0_pacer: CyclePacer,
     /// When `Some`, every CPU step is cross-checked against the reference Z80 interpreter
     /// running the original ROM bytes (see `verify.rs`). `None` in normal play.
     pub verify: Option<Box<crate::verify::VerifyLog>>,
@@ -334,6 +336,7 @@ impl DigDugMachine {
             decomp: DecompStats::new(),
             frame_count: 0,
             prev_sub_reset: true,
+            cpu0_pacer: CyclePacer::default(),
             verify: None,
         }
     }
@@ -348,12 +351,13 @@ impl DigDugMachine {
         self.decomp = DecompStats::new();
         self.frame_count = 0;
         self.prev_sub_reset = true;
+        self.cpu0_pacer.reset();
         self.fast_forward_boot();
     }
 
     fn fast_forward_boot(&mut self) {
-        // Fast-forward through the initial 1982 power-on RAM/ROM self-test and crosshatch screen
-        // (~315 frames) so the user lands right at the title/attract screen immediately on launch!
+        // Skip the native power-on self-test and crosshatch screen so interactive
+        // launches reach the title quickly. Diagnostic captures bypass this path.
         for _ in 0..340 {
             self.run_frame();
             if self.bus.game_started {
@@ -396,6 +400,24 @@ impl DigDugMachine {
         }
     }
 
+    fn step_cpu0_slot(&mut self, roms_ref: &Arc<DigDugRoms>) {
+        if self.cpu0_pacer.ready() {
+            let before = self.cpus[0].audited_cycles;
+            self.step_cpu(0, roms_ref);
+            self.cpu0_pacer.charge(self.cpus[0].audited_cycles - before);
+        }
+    }
+
+    fn service_namco_nmi(&mut self, roms_ref: &Arc<DigDugRoms>) {
+        // A timed block may occupy more than a frame. Service each 06XX transfer
+        // while its elapsed time is being paid, rather than stacking repeated
+        // NMI entries on a CPU that cannot yet take another normal step.
+        let before = self.cpus[0].audited_cycles;
+        self.cpus[0].trigger_nmi(&mut self.bus);
+        self.step_cpu(0, roms_ref);
+        self.cpu0_pacer.interrupt(11 + self.cpus[0].audited_cycles - before);
+    }
+
 
     pub fn run_frame(&mut self) {
         self.frame_count += 1;
@@ -410,13 +432,15 @@ impl DigDugMachine {
         }
 
         let roms_ref = Arc::clone(&self.bus.roms);
-        const SUB_STEPS_PER_QUARTER: usize = 300_000 / 60 / 4; // 1250 groups of 4 instructions = 5000 inst/frame
+        // 1,250 groups per quarter, four steps per group: 20,000 translated steps
+        // per CPU per frame. Grouped routines are not equal-duration instructions.
+        const SUB_STEPS_PER_QUARTER: usize = CPU_STEPS_PER_FRAME as usize / 4 / 4;
 
         for quarter in 0..4 {
             for _ in 0..SUB_STEPS_PER_QUARTER {
                 // Execute 4 steps on CPU 0 (Main)
                 for _ in 0..4 {
-                    self.step_cpu(0, &roms_ref);
+                    self.step_cpu0_slot(&roms_ref);
                     if self.bus.sub_cpu_reset && !self.prev_sub_reset {
                         self.cpus[1].reset();
                         self.cpus[2].reset();
@@ -439,7 +463,7 @@ impl DigDugMachine {
                 if self.bus.namco_nmi_counter > 0 {
                     self.bus.namco_nmi_counter -= 1;
                     if self.bus.namco_nmi_counter == 0 {
-                        self.cpus[0].trigger_nmi(&mut self.bus);
+                        self.service_namco_nmi(&roms_ref);
                         if self.bus.namco_command != 0x10 {
                             self.bus.namco_nmi_counter = NAMCO_NMI_DELAY;
                         }
@@ -471,6 +495,55 @@ impl DigDugMachine {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    fn isolated_cpu0() -> DigDugMachine {
+        let mut machine = DigDugMachine::new_unbooted(crate::test_support::roms(&[]));
+        machine.bus.sub_cpu_reset = false;
+        machine.prev_sub_reset = false;
+        machine.bus.irq_enable[2] = true; // Disable the sound NMI in this fixture.
+        machine.cpus[1].halted = true;
+        machine.cpus[2].halted = true;
+        machine.cpus[0].sp = 0x9A00;
+        machine.cpus[0].push(&mut machine.bus, 0x0238);
+        machine.cpus[0].pc = 0x005A;
+        machine
+    }
+
+    #[test]
+    fn watchdog_delay_occupies_nineteen_board_frames_while_other_cpus_run() {
+        let mut machine = isolated_cpu0();
+        for _ in 0..18 {
+            machine.run_frame();
+            assert_eq!(machine.cpus[0].pc, 0x005D);
+        }
+        machine.run_frame();
+        assert!(matches!(machine.cpus[0].pc, 0x0238 | 0x0272));
+        assert_eq!(machine.cpus[0].audited_cycles, 958_479);
+        for cpu in &machine.cpus[1..] {
+            assert_eq!(cpu.total_cycles, 19 * CPU_STEPS_PER_FRAME * 4);
+        }
+    }
+
+    #[test]
+    fn namco_transfers_complete_during_a_long_timed_block_without_nested_nmis() {
+        let mut machine = isolated_cpu0();
+        let sp = machine.cpus[0].sp;
+        machine.cpus[0].h_alt = 0x70;
+        machine.cpus[0].l_alt = 0;
+        machine.cpus[0].d_alt = 0x89;
+        machine.cpus[0].e_alt = 0xD0;
+        machine.cpus[0].b_alt = 0;
+        machine.cpus[0].c_alt = 2;
+        machine.bus.namco_command = 0x71;
+        machine.bus.namco_nmi_counter = 1;
+        machine.cpu0_pacer.charge(52_011);
+        machine.run_frame();
+        assert_eq!(machine.bus.namco_command, 0x10);
+        assert_eq!(machine.bus.namco_nmi_counter, 0);
+        assert_eq!(machine.cpus[0].sp, sp);
+        assert_eq!(machine.cpus[0].pc, 0x005A);
+        assert_eq!(machine.cpus[0].audited_cycles, 48 + 126);
+    }
 
     #[test]
     #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]

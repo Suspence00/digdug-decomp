@@ -5,6 +5,8 @@ pub mod hardware;
 pub mod player;
 pub mod rom;
 pub mod symbols;
+pub mod timeline;
+pub mod timing;
 pub mod verify;
 pub mod video;
 pub mod z80;

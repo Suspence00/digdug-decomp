@@ -911,6 +911,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         // with $7F (undug dirt) and border markers ($7E, $8D, $8E, $8F).
         // =====================================================================
         (0, 0x177C) => {
+            let timing_start = cpu.audited_cycles;
             for addr in 0x9000..0x9380u16 {
                 let col_mod = (addr & 0x1F) as u8;
                 let tile_val = if col_mod < 3 {
@@ -935,6 +936,9 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.last_hooked_name = "cpu0_init_dirt_grid";
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 400;
+            // 896 cells at 80 T-states; 28 column-one detours (+26),
+            // 56 other border detours (+31), four page tests and setup/RET.
+            cpu.audited_cycles = timing_start + (896 * 80 + 28 * 26 + 56 * 31 + 3 * 18 + 13 + 60);
             true
         }
 
@@ -944,6 +948,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         // and dirt ($7F), sets corners ($8F/$8E), and clears HUD ($8000..$803F).
         // =====================================================================
         (0, 0x17AE) => {
+            let timing_start = cpu.audited_cycles;
             for addr in 0x8040..0x83C0u16 {
                 let col_mod = (addr & 0x1F) as u8;
                 let tile_val = if col_mod < 3 {
@@ -972,6 +977,11 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.last_hooked_name = "cpu0_init_playfield_vram";
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 450;
+            // The grid loop matches $177C; this variant also fills 64 HUD
+            // cells. LD (HL),$8E at $17CE takes 10 T-states.
+            cpu.audited_cycles = timing_start
+                + (896 * 80 + 28 * 26 + 56 * 31 + 3 * 18 + 13)
+                + 10 + (7 + 13 + 10 + 13 + 10 + 7 + 64 * 42 - 5 + 10);
             true
         }
 
@@ -996,6 +1006,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         // Clears 128-byte actor/monster state tables at $84A5..$8524 or $8525..$85A4.
         // =====================================================================
         (0, 0x187F) => {
+            let timing_start = cpu.audited_cycles;
             for addr in 0x84A5..0x8525u16 {
                 bus.write_byte(0, addr, 0x00);
                 bus.write_byte(0, 0x6830, cpu.a);
@@ -1008,6 +1019,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.last_hooked_name = "cpu0_clear_actor_ram_p1";
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 260;
+            cpu.audited_cycles = timing_start + (10 + 7 + 128 * 42 - 5 + 10);
             true
         }
 
@@ -2807,12 +2819,16 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (0, 0x12B1) => {
+            let timing_start = cpu.audited_cycles;
             decomp_swap_memory_blocks(cpu, bus, 0x8040, 0x9000, 0x0380);
             stats.round_advance_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
             stats.last_hooked_name = "cpu0_swap_dirt_vram";
             cpu.total_cycles += 3200;
+            // Includes CALL/RET of $12BE and this routine's RET. Its caller's
+            // CALL is outside this audited boundary.
+            cpu.audited_cycles = timing_start + (3 * 10 + 17 + 896 * 62 - 5 + 10 + 10);
             true
         }
 
@@ -3164,6 +3180,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (0, 0x17ED) => {
+            let timing_start = cpu.audited_cycles;
             for addr in 0x8411..0x841Au16 {
                 bus.write_byte(0, addr, 0x00);
             }
@@ -3175,6 +3192,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.last_hooked_name = "cpu0_clear_score_wram";
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 140;
+            cpu.audited_cycles = timing_start + (10 + 7 + 9 * 29 - 5 + 10);
             true
         }
 
@@ -3225,12 +3243,15 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (0, 0x1892) => {
+            let timing_start = cpu.audited_cycles;
             decomp_init_rock_state_array(cpu, bus, 0x8425);
             stats.rock_physics_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
             stats.last_hooked_name = "cpu0_init_rock_ram_p1";
             cpu.total_cycles += 280;
+            // Eight rock slots, each including two CALL/RET $1964 helpers.
+            cpu.audited_cycles = timing_start + (10 + 7 + 8 * 181 - 5 + 10);
             true
         }
 
@@ -4402,6 +4423,25 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
             stats.last_hooked_name = "cpu0_vblank_resume_03fa";
+            true
+        }
+
+        (0, 0x0442) => {
+            // JP $0A27 follows the audited stage-one continuation. Keep it in
+            // a separate step so its IRQ-enabling epilogue runs after that work.
+            decomp_vblank_tail_0a27(cpu, bus, roms);
+            stats.total_rust_calls += 1;
+            stats.calls_this_frame += 1;
+            stats.last_hooked_name = "cpu0_vblank_stage_one_tail_0442";
+            cpu.total_cycles += 10;
+            true
+        }
+
+        (0, 0x044E) => {
+            decomp_vblank_resume_round_setup_044e(cpu, bus, roms);
+            stats.total_rust_calls += 1;
+            stats.calls_this_frame += 1;
+            stats.last_hooked_name = "cpu0_vblank_round_setup_resume_044e";
             true
         }
 
@@ -5964,6 +6004,7 @@ fn decomp_exx(cpu: &mut Z80) {
 }
 
 fn decomp_cpu0_nmi_06xx_io<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
+    let timing_start = cpu.audited_cycles;
     // 0x0066..0x00A0: NMI handler for Namco 06XX/51XX/53XX I/O transfer queue ($8900)
     decomp_exx(cpu);
     cpu.ldi(bus);
@@ -5972,6 +6013,7 @@ fn decomp_cpu0_nmi_06xx_io<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
         decomp_exx(cpu);
         cpu.iff1 = cpu.iff2;
         cpu.ret_subroutine(bus);
+        cpu.audited_cycles = timing_start + 48;
         return;
     }
 
@@ -5988,6 +6030,7 @@ fn decomp_cpu0_nmi_06xx_io<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
         decomp_exx(cpu);
         cpu.iff1 = cpu.iff2;
         cpu.ret_subroutine(bus);
+        cpu.audited_cycles = timing_start + 126;
         return;
     }
 
@@ -6020,6 +6063,7 @@ fn decomp_cpu0_nmi_06xx_io<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
     cpu.set_af(saved_af);
     cpu.iff1 = cpu.iff2;
     cpu.ret_subroutine(bus);
+    cpu.audited_cycles = timing_start + 268;
 }
 
 fn decomp_queue_06xx_io_command<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
@@ -13327,6 +13371,7 @@ pub fn decomp_clear_sound_and_sub_cpu_ram_15a6<B: Z80Bus>(
     bus: &mut B,
     roms: &DigDugRoms,
 ) {
+    let timing_start = cpu.audited_cycles;
     let saved_af = cpu.af();
     cpu.set_hl(0x8040);
     cpu.set_bc(0x0380);
@@ -13340,6 +13385,11 @@ pub fn decomp_clear_sound_and_sub_cpu_ram_15a6<B: Z80Bus>(
     cpu.set_af(saved_af);
     cpu.ret_subroutine(bus);
     cpu.total_cycles += 900;
+    // Includes nested CALL/RET $15BF: 896 iterations at 55 T-states,
+    // followed by 63 HUD iterations at 42 T-states and both outer saves.
+    cpu.audited_cycles = timing_start
+        + (11 + 10 + 10 + 17 + 896 * 55 - 5 + 10)
+        + (10 + 7 + 63 * 42 - 5 + 10 + 10);
 }
 
 /// $1606: Draws "PUSH START BUTTON" ("ONLY 1 PLAYER" or "1 OR 2 PLAYERS") on the credit screen.
@@ -14641,28 +14691,8 @@ pub fn decomp_cpu0_vblank_handler<B: Z80Bus>(
         // $0449: Stage 2 of Round Initialization
         bus.write_byte(0, 0x8400, f8400 | 0x80);
         call_cpu_sub(cpu, bus, roms, 0x17AE, 0x044E);
-        call_cpu_sub(cpu, bus, roms, 0x0C15, 0x0451);
-        call_cpu_sub(cpu, bus, roms, 0x1551, 0x0454);
-
-        if (bus.read_byte(0, 0x8400) & 0x02) == 0 {
-            bus.write_byte(0, 0x87DA, 0x00);
-            bus.write_word(0, 0x87D4, 0x0000);
-        } else {
-            bus.write_byte(0, 0x87D8, 0x00);
-            bus.write_word(0, 0x87D2, 0x0000);
-        }
-        bus.write_byte(0, 0x8799, 0x00);
-        bus.write_byte(0, 0x87EB, 0x00);
-        bus.write_word(0, 0x87ED, 0x0000);
-        bus.write_byte(0, 0x896D, 0x00);
-        bus.write_byte(0, 0x896C, 0x00);
-        bus.write_byte(0, 0x87F0, 0x00);
-        bus.write_byte(0, 0x989E, 0x00);
-        bus.write_byte(0, 0x989F, 0xE0);
-
-        call_cpu_sub(cpu, bus, roms, 0x0BA6, 0x048A);
-        call_cpu_sub(cpu, bus, roms, 0x0BB1, 0x048D);
-        decomp_vblank_tail_0a27(cpu, bus, roms);
+        // Resume at the actual CALL return boundary after the playfield work's
+        // audited duration has elapsed. Its epilogue must not enable IRQs yet.
         return;
     }
 
@@ -14770,7 +14800,7 @@ fn bus_and<B: Z80Bus>(bus: &mut B, addr: u16, mask: u8) {
     bus.write_byte(0, addr, v);
 }
 
-/// $03FA..$0442: Continuation of VBlank Stage 1 after `CALL $005A` returns to `0x03FA`.
+/// $03FA..$0441: Continuation of VBlank Stage 1 after `CALL $005A` returns.
 pub fn decomp_vblank_resume_after_005a_03fa<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
@@ -14795,6 +14825,37 @@ pub fn decomp_vblank_resume_after_005a_03fa<B: Z80Bus>(
     call_cpu_sub(cpu, bus, roms, 0x18AC, 0x043C);
     call_cpu_sub(cpu, bus, roms, 0x12B1, 0x043F);
     call_cpu_sub(cpu, bus, roms, 0x0C51, 0x0442);
+    // The next step executes JP $0A27 and enables IRQs in the epilogue, after
+    // this continuation's audited VRAM initialization and swap have elapsed.
+}
+
+/// $044E..$048F: Stage-two continuation after the audited playfield fill.
+fn decomp_vblank_resume_round_setup_044e<B: Z80Bus>(
+    cpu: &mut Z80,
+    bus: &mut B,
+    roms: &DigDugRoms,
+) {
+    call_cpu_sub(cpu, bus, roms, 0x0C15, 0x0451);
+    call_cpu_sub(cpu, bus, roms, 0x1551, 0x0454);
+
+    if (bus.read_byte(0, 0x8400) & 0x02) == 0 {
+        bus.write_byte(0, 0x87DA, 0x00);
+        bus.write_word(0, 0x87D4, 0x0000);
+    } else {
+        bus.write_byte(0, 0x87D8, 0x00);
+        bus.write_word(0, 0x87D2, 0x0000);
+    }
+    bus.write_byte(0, 0x8799, 0x00);
+    bus.write_byte(0, 0x87EB, 0x00);
+    bus.write_word(0, 0x87ED, 0x0000);
+    bus.write_byte(0, 0x896D, 0x00);
+    bus.write_byte(0, 0x896C, 0x00);
+    bus.write_byte(0, 0x87F0, 0x00);
+    bus.write_byte(0, 0x989E, 0x00);
+    bus.write_byte(0, 0x989F, 0xE0);
+
+    call_cpu_sub(cpu, bus, roms, 0x0BA6, 0x048A);
+    call_cpu_sub(cpu, bus, roms, 0x0BB1, 0x048D);
     decomp_vblank_tail_0a27(cpu, bus, roms);
 }
 
@@ -15561,6 +15622,7 @@ pub fn step_human_cpu0<B: Z80Bus>(
             cpu.set_hl(0x6000);
             cpu.pc = 0x005D;
             cpu.total_cycles += 10;
+            cpu.audited_cycles += 10;
             10
         }
         0x005D..=0x0065 => {
@@ -15574,10 +15636,12 @@ pub fn step_human_cpu0<B: Z80Bus>(
             if hl != 0 {
                 cpu.pc = 0x005D;
                 cpu.total_cycles += 39;
+                cpu.audited_cycles += 39;
                 39
             } else {
                 cpu.ret_subroutine(bus);
                 cpu.total_cycles += 44;
+                cpu.audited_cycles += 44;
                 44
             }
         }
@@ -16534,6 +16598,7 @@ mod translation_tests {
             assert_eq!(cpu.f, expected_f);
             assert_eq!(elapsed, cycles);
             assert_eq!(cpu.total_cycles, u64::from(cycles));
+            assert_eq!(cpu.audited_cycles, u64::from(cycles));
             assert_eq!(cpu.pc, if initial == 1 { 0x4444 } else { 0x005D });
             assert_eq!(cpu.sp, if initial == 1 { 0x9A02 } else { 0x9A00 });
         }
@@ -16592,6 +16657,168 @@ mod translation_tests {
         cpu.iff1 = true;
         cpu.iff2 = true;
         cpu
+    }
+
+    // Independent timing table for the original instructions reached by the
+    // audited bulk routines and Namco NMI handler. Conditional durations use
+    // the reference CPU's pre-instruction flags/counters, not native telemetry.
+    fn audited_reference_instruction_cycles(cpu: &Z80, bus: &mut DigDugBus) -> u64 {
+        let opcode = bus.read_byte(0, cpu.pc);
+        match opcode {
+            0xF5 => 11,
+            0x21 | 0x01 | 0x11 => 10,
+            0xCD => 17,
+            0xC9 => 10,
+            0x36 => 10,
+            0x32 => 13,
+            0x23 | 0x2B | 0x0B => 6,
+            0x79 | 0x7D | 0x7C | 0xB4 | 0xB0 | 0xD9 | 0xA7 | 0x2C | 0x2D | 0x6F => 4,
+            0x77 | 0x1A | 0x7E | 0x4E | 0x46 | 0x5E | 0x56 | 0x66 => 7,
+            0x06 | 0xE6 | 0xFE | 0x3E => 7,
+            0xDA | 0xCA | 0xEA => 10,
+            0xF1 => 10,
+            0x2A | 0x22 => 16,
+            0x10 => if cpu.b != 1 { 13 } else { 8 },
+            0x20 => if cpu.f & FLAG_Z == 0 { 12 } else { 7 },
+            0x18 => 12,
+            0xED => match bus.read_byte(0, cpu.pc + 1) {
+                0xA0 => 16,
+                0x45 => 14,
+                other => panic!("unaudited ED opcode {other:02X} at {:04X}", cpu.pc),
+            },
+            other => panic!("unaudited opcode {other:02X} at {:04X}", cpu.pc),
+        }
+    }
+
+    fn count_original_routine_cycles(mut cpu: Z80, mut bus: DigDugBus) -> u64 {
+        let original_sp = cpu.sp;
+        let mut cycles = 0;
+        for _ in 0..200_000 {
+            cycles += audited_reference_instruction_cycles(&cpu, &mut bus);
+            crate::z80_ref::ref_step(&mut cpu, &mut bus).unwrap();
+            if cpu.pc == 0x4444 && cpu.sp == original_sp + 2 {
+                return cycles;
+            }
+        }
+        panic!("original routine did not return within timing audit allowance");
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn audited_bulk_timing_matches_original_instructions_and_preserves_boundary_state() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for (pc, expected) in [
+            (0x15A6, 52_011), (0x177C, 74_271), (0x17AE, 76_974),
+            (0x12B1, 55_614), (0x17ED, 283), (0x187F, 5_398), (0x1892, 1_470),
+        ] {
+            for (a, flags, fill) in [(0, 0, 0), (0xA7, FLAG_C, 0x5A)] {
+                let mut bus = DigDugBus::new(roms.clone());
+                bus.shared_ram.fill(fill);
+                let mut pre = boundary_cpu(pc);
+                pre.a = a;
+                pre.f = flags;
+                pre.audited_cycles = 123;
+                bus.write_word(0, pre.sp, 0x4444);
+                assert_eq!(count_original_routine_cycles(pre.clone(), bus.clone()), expected, "${pc:04X}");
+                assert_cpu0_boundary_matches_rom(&roms, &pre, &bus);
+                let mut post = pre.clone();
+                step_human_cpu0(&mut post, &mut bus, &roms, &mut DecompStats::new());
+                assert_eq!(post.audited_cycles, 123 + expected, "${pc:04X}");
+            }
+        }
+        let mut bus = DigDugBus::new(roms.clone());
+        let mut cpu = boundary_cpu(0x005A);
+        bus.write_word(0, cpu.sp, 0x4444);
+        assert_eq!(count_original_routine_cycles(cpu.clone(), bus.clone()), 958_479);
+        while cpu.pc != 0x4444 {
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+        }
+        assert_eq!(cpu.audited_cycles, 958_479);
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn audited_namco_nmi_timing_covers_transfer_queue_branches() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for (remaining, queued_command, expected) in [(2, 0, 48), (1, 0, 126), (1, 0x71, 268)] {
+            let mut bus = DigDugBus::new(roms.clone());
+            bus.namco_command = 0x71;
+            bus.write_word(0, 0x8900, 0x8800);
+            bus.write_byte(0, 0x8800, queued_command);
+            bus.write_word(0, 0x8802, 3);
+            bus.write_word(0, 0x8804, 0x85A7);
+            bus.write_word(0, 0x8806, 0x7000);
+            let mut pre = boundary_cpu(0x0066);
+            pre.b_alt = 0;
+            pre.c_alt = remaining;
+            pre.h_alt = 0x70;
+            pre.l_alt = 0;
+            pre.d_alt = 0x85;
+            pre.e_alt = 0xA7;
+            pre.audited_cycles = 456;
+            bus.write_word(0, pre.sp, 0x4444);
+            assert_eq!(count_original_routine_cycles(pre.clone(), bus.clone()), expected);
+            assert_cpu0_boundary_matches_rom(&roms, &pre, &bus);
+            let mut post = pre;
+            step_human_cpu0(&mut post, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!(post.audited_cycles, 456 + expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn round_setup_yields_before_irq_enabling_epilogues_at_original_rom_boundaries() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for player in [0, 2] {
+            let mut bus = DigDugBus::new(roms.clone());
+            bus.write_byte(0, 0x8400, 0x48 | player);
+            bus.write_byte(0, 0x8409, 3);
+            bus.write_byte(0, 0x840E, 1);
+            bus.write_byte(0, 0x87CF, 0x24); // Normal, unfrozen native DIP settings.
+            bus.namco_command = 0x10;
+            bus.write_word(0, 0x8900, 0x8800);
+            bus.write_word(0, 0x8902, 0x8800);
+            let mut cpu = boundary_cpu(0x03FA);
+            bus.write_word(0, cpu.sp, 0x4444);
+            // The interrupt's saved registers remain on the stack across $005A.
+            for saved in [cpu.ix, cpu.iy, cpu.hl(), cpu.de(), cpu.bc(), cpu.af()] {
+                cpu.push(&mut bus, saved);
+            }
+            cpu.set_hl(0);
+            cpu.a = 0;
+            cpu.f = FLAG_Z | FLAG_PV;
+            let continuation_sp = cpu.sp;
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!((cpu.pc, cpu.sp), (0x0442, continuation_sp));
+            assert!(!bus.irq_enable[0], "stage-one fill/swap must finish before IRQ enable");
+            assert!(cpu.audited_cycles >= 76_974 + 55_614);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!((cpu.pc, cpu.sp), (0x4444, 0x9A02));
+            assert!(bus.irq_enable[0] && cpu.iff1);
+
+            // A subsequent interrupt begins stage two. Stop immediately after
+            // its audited $17AE call, preserving the live interrupt stack.
+            cpu.pc = 0x0280;
+            cpu.sp = 0x9A00;
+            cpu.iff1 = false;
+            cpu.iff2 = false;
+            bus.write_word(0, cpu.sp, 0x4444);
+            bus.write_byte(0, 0x8400, 0x48 | player);
+            bus.write_byte(0, 0x85A5, 0);
+            bus.write_byte(0, 0x85A7, 0);
+            bus.write_byte(0, 0x8657, 0);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!((cpu.pc, cpu.sp), (0x044E, 0x99F4));
+            assert!(!bus.irq_enable[0], "stage-two fill must finish before IRQ enable");
+            assert_eq!(bus.shared_ram[0x400] & 0x80, 0x80);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!((cpu.pc, cpu.sp), (0x4444, 0x9A02));
+            assert!(bus.irq_enable[0] && cpu.iff1);
+        }
     }
 
     #[test]
