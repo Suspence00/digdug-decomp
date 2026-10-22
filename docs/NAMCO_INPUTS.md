@@ -84,7 +84,9 @@ game-specific `A1/C1/E1` control-register shortcut, so arbitrary data-command mo
 changes and joystick-remap commands are not generally supported.
 
 Direction handling and raw/switch-mode fire retain their existing implementation;
-the raw-mode fire qualification rule has not been established. Held pumping was
-preserved, but this replay does not test tethering and inflating an enemy.
+the raw-mode fire qualification rule has not been established. The separate
+[pump gameplay checks](PUMP_SYSTEM.md) cover a natural enemy encounter, including
+held inflation, release, deflation and pop scoring. The short-fire replay above
+does not exercise those interactions by itself.
 Matching these input events does not establish complete MCU or whole-machine
 equivalence.

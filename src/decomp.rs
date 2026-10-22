@@ -6735,7 +6735,9 @@ fn decomp_advance_monster_pump_stage_0e9f<B: Z80Bus>(
     let de_step = step as u16;
     let tbl_hl = cpu.add16(0x32DF, de_step);
     let deflate_time = roms.cpu0[tbl_hl as usize];
+    cpu.a = deflate_time;
     let mon_base = bus.read_word(0, 0x87C8);
+    cpu.set_de(0x000C);
     let timer_hl = cpu.add16(mon_base, 0x000C);
     bus.write_byte(0, timer_hl, deflate_time);
 
@@ -6869,8 +6871,17 @@ fn decomp_advance_monster_pump_stage_0e9f<B: Z80Bus>(
         }
     };
     bus.write_byte(0, 0x9876, spr_code);
+    // The score-sprite selector tests the saved depth with AND A, then up to
+    // two DEC A instructions. LD A, $0A preserves those resulting flags.
+    cpu.a = stratum;
+    cpu.and8(cpu.a);
+    if cpu.a != 0 {
+        cpu.a = cpu.dec8(cpu.a);
+        if cpu.a != 0 {
+            cpu.a = cpu.dec8(cpu.a);
+        }
+    }
     cpu.a = 0x0A;
-    cpu.f = FLAG_Z | FLAG_N;
     bus.write_byte(0, 0x9877, 0x0A);
     bus.write_byte(0, 0x9976, 0x00);
     cpu.set_hl(0x98F7);

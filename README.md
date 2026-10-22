@@ -98,6 +98,8 @@ errors. Passing these checks does not establish complete arcade accuracy.
 See the [known limitations](docs/KNOWN_ISSUES.md) for unresolved timing and coverage.
 The [MAME frame timeline](docs/MAME_TIMELINE.md) measures boot and gameplay timing
 against an independently running reference machine.
+The [pump behavior guide](docs/PUMP_SYSTEM.md) explains hooking, inflating,
+releasing and scoring, with repeatable gameplay checks.
 
 ---
 

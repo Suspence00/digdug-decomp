@@ -1,0 +1,17 @@
+# Natural hook/pump/pop replay. Use script start 700 and at least 1800 frames.
+# Bits: 02 RIGHT, 04 DOWN, 10 FIRE, 20 START1, 40 COIN.
+# No game RAM is patched; movement digs a path to a Pooka's vertical tunnel.
+00 60
+40 6
+00 20
+40 6
+00 34
+20 6
+00 503
+02 112     # frames 1335..1446: reach the vertical tunnel's column.
+04 64      # frames 1447..1510: dig down to the tunnel entrance.
+00 2
+10 200     # frames 1513..1712: hook and inflate the Pooka until it pops.
+00 50
+# MAME 0.289: hook at 1524, inflation stages 2/3/4 at 1534/1565/1596.
+# Score changes from 30 to 430 at 1597; the tether clears at 1613.

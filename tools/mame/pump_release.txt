@@ -1,0 +1,19 @@
+# Natural hook/release/move replay. Use script start 700 and at least 1800 frames.
+# Bits: 02 RIGHT, 04 DOWN, 08 LEFT, 10 FIRE, 20 START1, 40 COIN.
+# Uses the same unmodified game state and approach as pump_interaction.txt.
+00 60
+40 6
+00 20
+40 6
+00 34
+20 6
+00 503
+02 112
+04 64
+00 2
+10 26      # frames 1513..1538: hook the Pooka and reach inflation stage 2.
+08 30      # frames 1539..1568: release fire and move left to break the tether.
+00 200
+# MAME 0.289: hook at 1524; release/movement clears the tether at 1541.
+# The enemy survives, deflates to stage 1 at 1605 and resumes walking at 1677.
+# Movement adds digging points, but this branch never receives the 400-point pop.

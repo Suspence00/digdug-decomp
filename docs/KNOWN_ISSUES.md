@@ -11,7 +11,8 @@
   execution, coinage ratios, raw-mode fire qualification and arbitrary data-command
   mode changes are not implemented. See [input model limits](NAMCO_INPUTS.md).
 - **Coverage is incomplete.** Focused checks cover startup, movement, deaths,
-  player handoffs and selected transitions. They do not establish every input
+  player handoffs, a natural [pump encounter](PUMP_SYSTEM.md), and selected
+  transitions. They do not establish every input
   sequence, late-round behavior or long-session stability.
 - **Sound and visuals need human assessment.** Smoke checks confirm output is
   produced; pixel, waveform and original hardware timing equivalence are unproven.
