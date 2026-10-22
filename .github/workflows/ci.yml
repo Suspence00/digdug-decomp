@@ -23,3 +23,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Run tests with synthetic data (no arcade ROMs)
         run: cargo test --locked --all-targets
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check recorded-input importer with synthetic data
+        run: python -m unittest discover -s tools/mame -p test_import_wolf170.py -v

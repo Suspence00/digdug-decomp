@@ -2,17 +2,19 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use digdug_re::hardware::DigDugMachine;
+use digdug_re::hardware::{DigDugMachine, DIGDUG_DIP_A, DIGDUG_DIP_B};
 use digdug_re::rom::DigDugRoms;
 use digdug_re::verify::{Mismatch, VerificationOutcome, VerifyLog};
 
 const USAGE: &str = "Usage: verify_decomp [--frames N] [--script FILE] [--script-start F]
-    [--max-instr N] [--top N] [--strict-registers] [--report-only]
+    [--dip-a HEX] [--dip-b HEX] [--max-instr N] [--top N] [--strict-registers] [--report-only]
 
 Exit codes: 0 passed, 1 failed, 2 inconclusive, 64 invalid arguments or run error.
 --strict-registers  Reject every endpoint register mismatch, even sampled convergence.
 --report-only       Print the actual outcome but exit 0 after a completed diagnostic run.
 --max-instr N       Reference steps per boundary (default 10000000, including startup tests).
+--script-start F    Apply the first script input before frame F (1-based; default 200).
+--dip-a/--dip-b     Physical switch bytes in hex (default 99/24).
 --help              Show this help without loading ROMs.";
 
 #[derive(Debug)]
@@ -20,6 +22,7 @@ struct Options {
     frames: u64,
     script: Option<String>,
     script_start: u64,
+    dips: [u8; 2],
     max_instr: u64,
     top: usize,
     strict_registers: bool,
@@ -32,6 +35,7 @@ impl Default for Options {
             frames: 1200,
             script: None,
             script_start: 200,
+            dips: [!DIGDUG_DIP_A, !DIGDUG_DIP_B],
             max_instr: 10_000_000,
             top: 40,
             strict_registers: false,
@@ -48,7 +52,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
             "--help" | "-h" => return Ok(None),
             "--strict-registers" => options.strict_registers = true,
             "--report-only" => options.report_only = true,
-            "--frames" | "--script" | "--script-start" | "--max-instr" | "--top" => {
+            "--frames" | "--script" | "--script-start" | "--dip-a" | "--dip-b" | "--max-instr" | "--top" => {
                 let value = args.next().filter(|v| !v.starts_with("--"))
                     .ok_or_else(|| format!("{arg} requires a value"))?;
                 let invalid = || format!("invalid value for {arg}: {value}");
@@ -56,6 +60,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
                     "--frames" => options.frames = value.parse().map_err(|_| invalid())?,
                     "--script" => options.script = Some(value),
                     "--script-start" => options.script_start = value.parse().map_err(|_| invalid())?,
+                    "--dip-a" => options.dips[0] = u8::from_str_radix(&value, 16).map_err(|_| invalid())?,
+                    "--dip-b" => options.dips[1] = u8::from_str_radix(&value, 16).map_err(|_| invalid())?,
                     "--max-instr" => options.max_instr = value.parse().map_err(|_| invalid())?,
                     "--top" => options.top = value.parse().map_err(|_| invalid())?,
                     _ => unreachable!(),
@@ -64,8 +70,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Option<Options>,
             _ => return Err(format!("unknown argument: {arg}")),
         }
     }
-    if options.frames == 0 || options.max_instr == 0 {
-        return Err("--frames and --max-instr must be greater than zero".into());
+    if options.frames == 0 || options.max_instr == 0 || options.script_start == 0 {
+        return Err("--frames, --max-instr and --script-start must be greater than zero".into());
     }
     Ok(Some(options))
 }
@@ -102,6 +108,10 @@ fn script_buttons(script: &[(u8, u32)], mut elapsed: u64) -> u8 {
     0
 }
 
+fn buttons_at(script: &[(u8, u32)], frame: u64, start: u64) -> u8 {
+    frame.checked_sub(start).map_or(0, |elapsed| script_buttons(script, elapsed))
+}
+
 fn severity(m: &Mismatch) -> usize {
     if m.state_count > 0 {
         0
@@ -117,6 +127,8 @@ fn severity(m: &Mismatch) -> usize {
 fn report(log: &VerifyLog, options: &Options) {
     println!("=== Differential verification report ===");
     println!("frames run:        {}", options.frames);
+    println!("physical DIP:      {:02X}/{:02X}; script starts at frame {} (1-based)",
+        options.dips[0], options.dips[1], options.script_start);
     println!("steps compared:    {}", log.checked);
     println!("steps skipped (already halted): {}", log.skipped_halted);
     println!("reference timeouts: {} distinct units ({} total)",
@@ -171,14 +183,14 @@ fn run(options: &Options) -> Result<VerificationOutcome, String> {
     };
     let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted"))?;
     let mut machine = DigDugMachine::new_unbooted(roms);
+    machine.bus.dip_switches = options.dips;
     machine.verify = Some(Box::new(VerifyLog::new(options.max_instr)));
     let t0 = std::time::Instant::now();
-    for frame in 0..options.frames {
-        machine.bus.buttons = frame.checked_sub(options.script_start)
-            .map_or(0, |elapsed| script_buttons(&script, elapsed));
+    for frame in 1..=options.frames {
+        machine.bus.buttons = buttons_at(&script, frame, options.script_start);
         machine.run_frame();
-        if frame % 200 == 199 {
-            eprintln!("  ... frame {}/{} ({:.1}s)", frame + 1, options.frames, t0.elapsed().as_secs_f32());
+        if frame % 200 == 0 {
+            eprintln!("  ... frame {}/{} ({:.1}s)", frame, options.frames, t0.elapsed().as_secs_f32());
         }
     }
     let log = machine.verify.take().unwrap();
@@ -210,7 +222,8 @@ mod tests {
     fn rejects_empty_runs_and_misspelled_or_missing_options() {
         for values in [vec!["--frames", "0"], vec!["--max-instr", "0"],
             vec!["--frames", "no"], vec!["--strict-regsters"], vec!["--script"],
-            vec!["--script", "--report-only"]] {
+            vec!["--script", "--report-only"], vec!["--script-start", "0"],
+            vec!["--dip-a", "100"], vec!["--dip-b", "not-hex"]] {
             assert!(args(&values).is_err(), "accepted {values:?}");
         }
         assert!(args(&["--help"]).unwrap().is_none());
@@ -222,6 +235,8 @@ mod tests {
         assert!(!defaults.report_only && !defaults.strict_registers);
         let options = args(&["--strict-registers", "--report-only"]).unwrap().unwrap();
         assert!(options.strict_registers && options.report_only);
+        let options = args(&["--dip-a", "A1", "--dip-b", "24"]).unwrap().unwrap();
+        assert_eq!(options.dips, [0xA1, 0x24]);
     }
 
     #[test]
@@ -229,6 +244,9 @@ mod tests {
         let script = parse_script("# synthetic input\n40 2 # coin\n00 1\n80 1\n").unwrap();
         let actual: Vec<_> = (0..6).map(|f| script_buttons(&script, f)).collect();
         assert_eq!(actual, [0x40, 0x40, 0, 0x80, 0, 0]);
+        let actual: Vec<_> = (1..=8).map(|f| buttons_at(&script, f, 3)).collect();
+        assert_eq!(actual, [0, 0, 0x40, 0x40, 0, 0x80, 0, 0]);
+        assert_eq!(buttons_at(&script, 1, 1), 0x40);
         for text in ["40 0", "100 1", "40", "40 1 extra", "40 nope"] {
             assert!(parse_script(text).is_err(), "accepted {text}");
         }

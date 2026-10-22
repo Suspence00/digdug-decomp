@@ -14,7 +14,13 @@ cargo run --locked --release --bin verify_decomp -- --frames 2000 --script tools
 
 `--help` lists the options without loading ROMs. Scripts contain a hexadecimal
 button mask and positive frame duration per line; comments start with `#`.
-The default script start is frame 200. The reference allowance defaults to
+The default script start is frame 200. Frame numbers are **1-based**, matching
+the replay runner and timeline: the first script input is applied before the
+named frame. Older verifier builds applied it one frame later; add 1 to an old
+`--script-start` value when reproducing an old diagnostic exactly.
+`--dip-a` and `--dip-b` accept physical cabinet switch bytes in hexadecimal
+(defaults 99/24), so recorded-game diagnostics can use their actual settings.
+The reference allowance defaults to
 10,000,000 steps per boundary so startup self-tests can finish.
 
 ## Results

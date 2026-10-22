@@ -1024,6 +1024,7 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (0, 0x188D) => {
+            let timing_start = cpu.audited_cycles;
             for addr in 0x8525..0x85A5u16 {
                 bus.write_byte(0, addr, 0x00);
                 bus.write_byte(0, 0x6830, cpu.a);
@@ -1036,6 +1037,8 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             stats.last_hooked_name = "cpu0_clear_actor_ram_p2";
             cpu.ret_subroutine(bus);
             cpu.total_cycles += 260;
+            // Same body as $187F, reached through an extra JR $1882 (12 T-states).
+            cpu.audited_cycles = timing_start + (10 + 12 + 7 + 128 * 42 - 5 + 10);
             true
         }
 
@@ -3256,12 +3259,15 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
         }
 
         (0, 0x18A7) => {
+            let timing_start = cpu.audited_cycles;
             decomp_init_rock_state_array(cpu, bus, 0x8465);
             stats.rock_physics_calls += 1;
             stats.total_rust_calls += 1;
             stats.calls_this_frame += 1;
             stats.last_hooked_name = "cpu0_init_rock_ram_p2";
             cpu.total_cycles += 280;
+            // Same body as $1892, reached through an extra JR $1895 (12 T-states).
+            cpu.audited_cycles = timing_start + (10 + 12 + 7 + 8 * 181 - 5 + 10);
             true
         }
 
@@ -4445,6 +4451,16 @@ pub fn try_run_decompiled_subroutine<B: Z80Bus>(
             true
         }
 
+        (0, 0x048D) => {
+            // Keep JP $0A27 separate so stage-two work is paid before IRQ enable.
+            decomp_vblank_tail_0a27(cpu, bus, roms);
+            stats.total_rust_calls += 1;
+            stats.calls_this_frame += 1;
+            stats.last_hooked_name = "cpu0_vblank_stage_two_tail_048d";
+            cpu.total_cycles += 10;
+            true
+        }
+
         (0, 0x3DE3) => {
             decomp_ram_bank_lfsr_test_3de3(cpu, bus);
             stats.dirt_init_calls += 1;
@@ -4732,16 +4748,29 @@ fn decomp_cap_rock_tunnel_tile<B: Z80Bus>(cpu: &mut Z80, bus: &mut B, hl: u16) {
     let above = bus.read_byte(0, hl.wrapping_sub(1));
     cpu.a = above;
     cpu.sub8(0x7F, false, false);
-    if above != 0x7F {
+    if above == 0x7F {
         return;
     }
-    let cur = bus.read_byte(0, hl);
-    cpu.a = cur;
-    match cur {
-        0x00 | 0x04 | 0x0A | 0x0B => bus.write_byte(0, hl, 0x02),
-        0x01 | 0x05 | 0x06 | 0x07 => bus.write_byte(0, hl, 0x03),
-        0x08 | 0x09 => bus.write_byte(0, hl, 0x0C),
-        _ => {}
+    cpu.a = bus.read_byte(0, hl);
+    cpu.sub8(0x00, false, false);
+    if (cpu.f & FLAG_Z) != 0 {
+        bus.write_byte(0, hl, 0x02);
+        return;
+    }
+    // $230E..$2329: retain the original CP/DEC flags and working A, including
+    // the unchecked DEC steps for tile codes 2 and 3.
+    for selector in 1..=11 {
+        cpu.a = cpu.dec8(cpu.a);
+        let tile = match selector {
+            1 | 5 | 6 | 7 => 0x03,
+            4 | 10 | 11 => 0x02,
+            8 | 9 => 0x0C,
+            _ => continue,
+        };
+        if (cpu.f & FLAG_Z) != 0 {
+            bus.write_byte(0, hl, tile);
+            return;
+        }
     }
 }
 
@@ -9488,11 +9517,13 @@ fn decomp_step_monster_ai_and_motion_2348<B: Z80Bus>(
                 if (cur_x & 0x0F) >= 0x08 {
                     cpu.a = cur_x & 0xF0;
                     cpu.add8(0x11, false);
+                    bus.write_byte(0, x_hl, cpu.a);
+                    return;
                 } else {
                     cpu.a = cpu.inc8(cur_x & 0xF0);
+                    bus.write_byte(0, x_hl, cpu.a);
+                    // $2503 falls through to the shared cleanup/retry below.
                 }
-                bus.write_byte(0, x_hl, cpu.a);
-                return;
             }
         }
 
@@ -11345,47 +11376,32 @@ fn decomp_cpu1_attract_init_state2<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
     bus.write_byte(1, cpu.hl(), v8658);
     cpu.set_hl(0x8676);
     bus.write_byte(1, 0x8676, 0x00);
-    cpu.set_hl(0x83C0);
-    cpu.b = 0x3F;
+    // $0714..$072A: hide the actors from the preceding attract scene.
+    cpu.xor8(cpu.a);
+    for address in [0x98E4, 0x98E5, 0x98EC, 0x98ED, 0x98A2, 0x98A3, 0x9880, 0x9881] {
+        bus.write_byte(1, address, cpu.a);
+    }
+    // $072D..$073D: pair sprite codes with their cleared coordinates.
+    cpu.set_hl(0x980A);
+    cpu.set_de(0x988A);
+    cpu.b = 0x18;
+    cpu.c = 0x32;
     while cpu.b != 0 {
-        cpu.a = bus.read_byte(1, cpu.hl());
-        cpu.sub8(0x0C, false, false);
-        if (cpu.f & FLAG_Z) != 0 {
-            bus.write_byte(1, cpu.hl(), 0x8C);
-        }
+        bus.write_byte(1, cpu.hl(), cpu.c);
+        bus.write_byte(1, cpu.de(), cpu.a);
         cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.set_de(cpu.de().wrapping_add(1));
         cpu.b = cpu.b.wrapping_sub(1);
     }
     cpu.set_hl(0x805F);
     bus.write_word(1, 0x865A, 0x805F);
-    cpu.set_hl(0x9888);
-    cpu.b = 0x38;
-    while cpu.b != 0 {
-        bus.write_byte(1, cpu.hl(), 0x00);
-        cpu.set_hl(cpu.hl().wrapping_add(1));
-        cpu.b = cpu.b.wrapping_sub(1);
-    }
-    cpu.set_hl(0x9840);
-    cpu.b = 0x20;
-    while cpu.b != 0 {
-        bus.write_byte(1, cpu.hl(), 0x32);
-        cpu.set_hl(cpu.hl().wrapping_add(1));
-        cpu.b = cpu.b.wrapping_sub(1);
-    }
-    cpu.set_hl(0x9808);
-    cpu.b = 0x1A;
-    while cpu.b != 0 {
-        bus.write_byte(1, cpu.hl(), 0x32);
-        cpu.set_hl(cpu.hl().wrapping_add(1));
-        cpu.b = cpu.b.wrapping_sub(1);
-    }
 }
 
 fn decomp_cpu1_attract_init_state3<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
     let v8658 = cpu.cb_op(0xE6, bus.read_byte(1, cpu.hl()));
     bus.write_byte(1, cpu.hl(), v8658);
-    cpu.set_hl(0x98A4);
-    cpu.b = 0x06;
+    cpu.set_hl(0x9900);
+    cpu.b = 0x80;
     while cpu.b != 0 {
         bus.write_byte(1, cpu.hl(), 0x00);
         cpu.set_hl(cpu.hl().wrapping_add(1));
@@ -11402,79 +11418,170 @@ fn decomp_cpu1_attract_init_state6<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
 }
 
 fn decomp_cpu1_attract_init_state6_from_075f<B: Z80Bus>(cpu: &mut Z80, bus: &mut B) {
-    cpu.set_hl(0x9880);
     cpu.b = 0x80;
+    cpu.set_hl(0x9800);
+    cpu.set_de(0x9880);
+    cpu.ix = 0x9900;
     while cpu.b != 0 {
-        bus.write_byte(1, cpu.hl(), 0x00);
+        cpu.xor8(cpu.a);
+        bus.write_byte(1, cpu.hl(), cpu.a);
+        bus.write_byte(1, cpu.de(), cpu.a);
+        bus.write_byte(1, cpu.ix, cpu.a);
         cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.set_de(cpu.de().wrapping_add(1));
+        cpu.ix = cpu.ix.wrapping_add(1);
         cpu.b = cpu.b.wrapping_sub(1);
     }
-    cpu.set_hl(0x8040);
-    cpu.set_bc(0x0380);
-    while cpu.bc() != 0 {
-        bus.write_byte(1, cpu.hl(), 0x7F);
-        cpu.set_hl(cpu.hl().wrapping_add(1));
-        cpu.set_bc(cpu.bc().wrapping_sub(1));
-        bus.write_byte(1, 0x6830, cpu.a);
-        cpu.a = cpu.c;
-        cpu.or8(cpu.b);
-    }
-    cpu.set_hl(0x87F0);
-    let v = cpu.cb_op(0xDE, bus.read_byte(1, 0x87F0));
-    bus.write_byte(1, 0x87F0, v);
+    cpu.set_hl(0xA000);
+    cpu.xor8(cpu.a);
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    // Before JP $0517: A=00,F=44,B=00,C preserved,HL=A003,DE=9900,IX=9980.
 }
 
+// State 7: $0785..$07BF. No calls into $0351 or the text renderer occur.
 fn decomp_cpu1_attract_init_state7<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
-    roms: &DigDugRoms,
+    _roms: &DigDugRoms,
 ) {
     let v8658 = cpu.cb_op(0xE6, bus.read_byte(1, cpu.hl()));
     bus.write_byte(1, cpu.hl(), v8658);
-    cpu.set_hl(0x0487);
-    bus.write_word(1, 0x865A, 0x0487);
-    cpu.a = 0x0A;
-    bus.write_byte(1, 0x865C, 0x0A);
-    cpu.set_hl(0x0000);
-    bus.write_word(1, 0x865E, 0x0000);
-    cpu.set_hl(0x8785);
-    let v85 = cpu.cb_op(0xBE, bus.read_byte(1, 0x8785));
-    bus.write_byte(1, 0x8785, v85);
-    call_cpu_sub(cpu, bus, roms, 0x0351, 0x07A1);
-    cpu.set_hl(0x0C30);
-    cpu.set_de(0x813F);
-    cpu.b = 0x08;
-    call_cpu_sub(cpu, bus, roms, 0x0E3B, 0x07AC);
-    cpu.set_hl(0x0C38);
-    cpu.set_de(0x815F);
-    cpu.b = 0x06;
-    call_cpu_sub(cpu, bus, roms, 0x0E3B, 0x07B7);
+    cpu.set_hl(0x840D);
+    cpu.set_de(0x87A9);
+    cpu.a = bus.read_byte(1, cpu.hl());
+    bus.write_byte(1, cpu.de(), cpu.a);
+    cpu.c = cpu.a;
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    cpu.set_de(cpu.de().wrapping_add(1));
+    cpu.a = bus.read_byte(1, cpu.hl());
+    bus.write_byte(1, cpu.de(), cpu.a);
+    cpu.a = cpu.c;
+    cpu.set_de(cpu.de().wrapping_add(1));
+    bus.write_byte(1, cpu.de(), cpu.a);
     cpu.set_hl(0x8676);
-    bus.write_byte(1, 0x8676, 0x10);
+    bus.write_byte(1, cpu.hl(), 0x10);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    bus.write_byte(1, cpu.hl(), 0);
+    cpu.set_hl(0x8780);
+    let value = cpu.inc8(bus.read_byte(1, cpu.hl()));
+    bus.write_byte(1, cpu.hl(), value);
+    cpu.cb_op(0x46, value);
+    cpu.set_hl(if value & 1 == 0 { 0x15E3 } else { 0x166D });
+    bus.write_word(1, 0x865A, cpu.hl());
+    cpu.a = 0x7E;
+    bus.write_byte(1, 0x865C, cpu.a); // Only the low byte is written.
+    cpu.set_hl(0);
+    bus.write_word(1, 0x865E, cpu.hl());
+    // Before JP $0517: A=7E,B preserved,C=P1 round,DE=87AB,HL=0000,
+    // IX preserved. F is BIT 0 of incremented $8780 (incoming C preserved).
 }
 
+// State 8: $07C0..$084F. Inline all original loops/LDIR; no native subcalls.
 fn decomp_cpu1_attract_init_state8<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
-    roms: &DigDugRoms,
+    _roms: &DigDugRoms,
 ) {
     let v8658 = cpu.cb_op(0xE6, bus.read_byte(1, cpu.hl()));
     bus.write_byte(1, cpu.hl(), v8658);
+    cpu.set_hl(0x840D);
+    cpu.set_de(0x87A9);
+    cpu.a = bus.read_byte(1, cpu.de());
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    cpu.set_de(cpu.de().wrapping_add(1));
+    cpu.a = bus.read_byte(1, cpu.de());
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(0x8040);
+    cpu.set_bc(0x0380);
+    while cpu.bc() != 0 {
+        bus.write_byte(1, cpu.hl(), 0x0C);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.set_bc(cpu.bc().wrapping_sub(1));
+        cpu.a = cpu.c;
+        cpu.or8(cpu.b);
+    }
     cpu.set_hl(0x9880);
     cpu.b = 0x80;
     while cpu.b != 0 {
-        bus.write_byte(1, cpu.hl(), 0x00);
+        bus.write_byte(1, cpu.hl(), 0);
         cpu.set_hl(cpu.hl().wrapping_add(1));
         cpu.b = cpu.b.wrapping_sub(1);
     }
-    cpu.set_hl(0x0C40);
-    cpu.set_de(0x811E);
-    cpu.b = 0x08;
-    call_cpu_sub(cpu, bus, roms, 0x0E3B, 0x07D6);
+    cpu.set_hl(0x9800);
+    cpu.b = 0x40;
+    while cpu.b != 0 {
+        bus.write_byte(1, cpu.hl(), 0x32);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        bus.write_byte(1, cpu.hl(), 0);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.b = cpu.b.wrapping_sub(1);
+    }
+    cpu.set_hl(0x83C0);
+    cpu.b = 0x3F;
+    while cpu.b != 0 {
+        cpu.a = bus.read_byte(1, cpu.hl());
+        cpu.sub8(0x8C, false, false);
+        if cpu.f & FLAG_Z != 0 {
+            bus.write_byte(1, cpu.hl(), 0x0C);
+        }
+        bus.write_byte(1, 0x6830, cpu.a);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.b = cpu.b.wrapping_sub(1);
+    }
+    cpu.set_hl(0x05A2);
+    cpu.set_de(0x98C0);
+    cpu.set_bc(0x14);
+    while cpu.bc() != 0 { cpu.ldi(bus); }
+    cpu.set_hl(0x9840);
+    cpu.b = 0x0A;
+    cpu.c = 0x86;
+    while cpu.b != 0 {
+        bus.write_byte(1, cpu.hl(), cpu.c);
+        cpu.c = cpu.inc8(cpu.c);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        bus.write_byte(1, cpu.hl(), 0x0B);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.b = cpu.b.wrapping_sub(1);
+    }
+    cpu.set_hl(0x9940);
+    cpu.b = 0x14;
+    while cpu.b != 0 {
+        bus.write_byte(1, cpu.hl(), 0);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.b = cpu.b.wrapping_sub(1);
+    }
+    cpu.set_hl(0x812B);
+    cpu.set_de(0x0020);
+    cpu.b = 0x0E;
+    cpu.ix = 0x0850;
+    while cpu.b != 0 {
+        cpu.a = bus.read_byte(1, cpu.ix);
+        bus.write_byte(1, cpu.hl(), cpu.a);
+        cpu.ix = cpu.ix.wrapping_add(1);
+        let next_hl = cpu.add16(cpu.hl(), cpu.de());
+        cpu.set_hl(next_hl);
+        cpu.b = cpu.b.wrapping_sub(1);
+    }
+    cpu.set_hl(0xA003);
+    bus.write_byte(1, cpu.hl(), 1);
     cpu.set_hl(0x865E);
-    bus.write_byte(1, 0x865E, 0xFF);
+    bus.write_byte(1, cpu.hl(), 0xFF);
+    cpu.set_hl(0x87CC);
+    let value = cpu.cb_op(0xC6, bus.read_byte(1, cpu.hl()));
+    bus.write_byte(1, cpu.hl(), value);
+    // Before JP $0517: A=ROM[$085D] (Rev2 7F), BC=0090, DE=0020,
+    // HL=87CC, IX=085E, documented F=80 (last ADD HL,DE), carry clear.
 }
 
+// State 9: $085E..$087C. The ROM genuinely says LD HL,($A000), opcode 2A;
+// preserve the indirect read through the bus, including possible wraparound.
 fn decomp_cpu1_attract_init_state9<B: Z80Bus>(
     cpu: &mut Z80,
     bus: &mut B,
@@ -11482,18 +11589,23 @@ fn decomp_cpu1_attract_init_state9<B: Z80Bus>(
 ) {
     let v8658 = cpu.cb_op(0xE6, bus.read_byte(1, cpu.hl()));
     bus.write_byte(1, cpu.hl(), v8658);
-    cpu.set_hl(0x805E);
-    cpu.set_de(0x0020);
-    cpu.b = 0x18;
-    while cpu.b != 0 {
+    cpu.a = 1;
+    cpu.set_hl(bus.read_word(1, 0xA000));
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(1));
+    bus.write_byte(1, cpu.hl(), cpu.a);
+    cpu.set_hl(cpu.hl().wrapping_add(2));
+    bus.write_byte(1, cpu.hl(), 0);
+    cpu.set_hl(0x8040);
+    cpu.set_bc(0x0380);
+    while cpu.bc() != 0 {
         bus.write_byte(1, cpu.hl(), 0x7F);
-        let next_hl = cpu.add16(cpu.hl(), 0x0020);
-        cpu.set_hl(next_hl);
-        cpu.b = cpu.b.wrapping_sub(1);
+        cpu.set_hl(cpu.hl().wrapping_add(1));
+        cpu.set_bc(cpu.bc().wrapping_sub(1));
+        cpu.a = cpu.c;
+        cpu.or8(cpu.b);
     }
-    cpu.set_hl(0x87CC);
-    let v = cpu.cb_op(0xC6, bus.read_byte(1, 0x87CC));
-    bus.write_byte(1, 0x87CC, v);
+    // Before JP $0517: A=00,F=44,BC=0000,HL=83C0; DE/IX preserved.
 }
 
 fn decomp_cpu1_attract_update_state0<B: Z80Bus>(
@@ -14849,6 +14961,8 @@ fn decomp_vblank_resume_round_setup_044e<B: Z80Bus>(
     call_cpu_sub(cpu, bus, roms, 0x0C15, 0x0451);
     call_cpu_sub(cpu, bus, roms, 0x1551, 0x0454);
 
+    // Both player branches execute XOR A before clearing their round counters.
+    cpu.xor8(cpu.a);
     if (bus.read_byte(0, 0x8400) & 0x02) == 0 {
         bus.write_byte(0, 0x87DA, 0x00);
         bus.write_word(0, 0x87D4, 0x0000);
@@ -14867,7 +14981,7 @@ fn decomp_vblank_resume_round_setup_044e<B: Z80Bus>(
 
     call_cpu_sub(cpu, bus, roms, 0x0BA6, 0x048A);
     call_cpu_sub(cpu, bus, roms, 0x0BB1, 0x048D);
-    decomp_vblank_tail_0a27(cpu, bus, roms);
+    // Resume at JP $0A27 after the nested actor/rock setup costs have elapsed.
 }
 
 /// $04E0..$05C6: Spawns round monsters/rocks and initializes timers (also jumped to from $0AF8 in attract mode).
@@ -16670,6 +16784,216 @@ mod translation_tests {
         cpu
     }
 
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn attract_scene_initializers_match_original_rom() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for (scene, helper_entry) in [
+            (0, 0x0526), (1, 0x06A2), (2, 0x070D), (3, 0x0748),
+            (6, 0x075D), (7, 0x0785), (8, 0x07C0), (9, 0x085E), (10, 0x087D),
+        ] {
+            for fill in [0x5A, 0xA5] {
+                let counters: &[u8] = if scene == 7 { &[0, 1, 0xFF] } else { &[0] };
+                for &counter in counters {
+                    let entries = [helper_entry, 0x049B, 0x0080].into_iter()
+                        .chain((scene == 6).then_some(0x075F));
+                    for entry in entries {
+                        let mut bus = DigDugBus::new(roms.clone());
+                        bus.shared_ram[0x3C0..0x400].fill(0x0C); // HUD tiles must survive.
+                        if scene == 8 {
+                            for (index, byte) in bus.shared_ram[0x3C0..0x400].iter_mut().enumerate() {
+                                *byte = [0x8C, 0x0C, 0x7F, 0xA5][index % 4];
+                            }
+                            bus.shared_ram[0x3FF] = 0x8C; // Outside the 63-byte conversion loop.
+                        }
+                        bus.shared_ram[0x1800..0x1981].fill(fill); // Include a bank-end sentinel.
+                        bus.write_byte(1, 0x8657, 0x43);
+                        bus.write_byte(1, 0x8658, scene);
+                        bus.write_word(1, 0x865A, 0xABCD);
+                        bus.write_word(1, 0x865C, 0xCDEF);
+                        bus.write_byte(1, 0x8676, 0x72);
+                        bus.write_byte(1, 0x8780, counter);
+                        bus.write_byte(1, 0x840D, 3);
+                        bus.write_byte(1, 0x840E, 9);
+                        bus.write_byte(1, 0x87A9, 0x11);
+                        bus.write_byte(1, 0x87AA, 0x17);
+                        bus.write_byte(1, 0x87CF, 0x20); // Enable the handler's normal processing.
+                        for address in 0xA000..=0xA003 { bus.write_byte(1, address, 1); }
+                        let mut pre = boundary_cpu(entry);
+                        pre.cpu_id = 1;
+                        pre.sp = 0x9A7E;
+                        pre.set_hl(0x8658);
+                        pre.f = FLAG_C;
+                        bus.write_word(1, pre.sp, 0x4444);
+                        let pre_bus = bus.clone();
+                        let mut post = pre.clone();
+                        if entry == helper_entry || entry == 0x075F {
+                            match scene {
+                                0 => decomp_cpu1_attract_init_state0(&mut post, &mut bus, &roms),
+                                1 => decomp_cpu1_attract_init_state1(&mut post, &mut bus),
+                                2 => decomp_cpu1_attract_init_state2(&mut post, &mut bus),
+                                3 => decomp_cpu1_attract_init_state3(&mut post, &mut bus),
+                                6 if entry == 0x075F => decomp_cpu1_attract_init_state6_from_075f(&mut post, &mut bus),
+                                6 => decomp_cpu1_attract_init_state6(&mut post, &mut bus),
+                                7 => decomp_cpu1_attract_init_state7(&mut post, &mut bus, &roms),
+                                8 => decomp_cpu1_attract_init_state8(&mut post, &mut bus, &roms),
+                                9 => decomp_cpu1_attract_init_state9(&mut post, &mut bus, &roms),
+                                10 => {
+                                    let value = post.cb_op(0xE6, bus.read_byte(1, post.hl()));
+                                    bus.write_byte(1, post.hl(), value);
+                                }
+                                _ => unreachable!(),
+                            }
+                            decomp_cpu1_attract_exit_0517(&mut post, &mut bus);
+                            post.ret_subroutine(&mut bus);
+                        } else {
+                            step_human_cpu1(&mut post, &mut bus, &roms, &mut DecompStats::new());
+                        }
+                        assert_eq!((post.pc, post.sp), (0x4444, 0x9A80));
+                        let mut log = crate::verify::VerifyLog::new(100_000);
+                        log.check(0, "attract initializer", &pre, &pre_bus, &post, &bus);
+                        let differences: Vec<_> = log.mismatches.values().flat_map(|m| {
+                            m.reg_example.iter().chain(&m.state_example)
+                        }).collect();
+                        assert_eq!(log.outcome(true), crate::verify::VerificationOutcome::Passed,
+                            "scene {scene}, entry ${entry:04X}, fill {fill:02X}: {differences:?}");
+                        if scene == 2 || scene == 3 {
+                            assert!(bus.shared_ram[0x3C0..0x400].iter().all(|&b| b == 0x0C));
+                            assert_eq!(bus.shared_ram[0x1808..0x180A], [fill, fill]);
+                            assert!(bus.shared_ram[0x1840..0x1860].iter().all(|&b| b == fill));
+                        }
+                        if scene == 2 {
+                            assert!(bus.shared_ram[0x180A..0x1822].iter().all(|&b| b == 0x32));
+                            assert!(bus.shared_ram[0x188A..0x18A2].iter().all(|&b| b == 0));
+                            for address in [0x98E4, 0x98E5, 0x98EC, 0x98ED, 0x98A2, 0x98A3, 0x9880, 0x9881] {
+                                assert_eq!(bus.shared_ram[address - 0x8000], 0);
+                            }
+                            assert_eq!((post.c, post.de()), (0x32, 0x98A2));
+                            assert_eq!(bus.read_word(1, 0x865A), 0x805F);
+                        } else if scene == 3 {
+                            assert!(bus.shared_ram[0x1900..0x1980].iter().all(|&b| b == 0));
+                            assert_eq!(bus.shared_ram[0x1980], fill);
+                            assert_eq!(bus.shared_ram[0x18A4..0x18AA], [fill; 6]);
+                            assert_eq!(bus.read_word(1, 0x865A), 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn rock_tunnel_caps_match_rom_for_every_tile_and_neighbor_guard() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        for above in [0x7F, 0x00, 0x80] {
+            for tile in 0..=255u8 {
+                let mut bus = DigDugBus::new(roms.clone());
+                bus.shared_ram.fill(0x5A);
+                bus.write_byte(0, 0x824F, above);
+                bus.write_byte(0, 0x8250, tile);
+                let mut cpu = boundary_cpu(0x22FF);
+                cpu.set_hl(0x8250);
+                cpu.set_bc(0xA579);
+                cpu.set_de(0x5148);
+                cpu.f = FLAG_C | FLAG_S | FLAG_PV;
+                bus.write_word(0, cpu.sp, 0x4444);
+                assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+                step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+                let expected = if above == 0x7F { tile } else {
+                    match tile {
+                        0 | 4 | 10 | 11 => 2,
+                        1 | 5 | 6 | 7 => 3,
+                        8 | 9 => 12,
+                        _ => tile,
+                    }
+                };
+                assert_eq!(bus.read_byte(0, 0x8250), expected, "tile {tile:02X}, above {above:02X}");
+                assert_eq!((cpu.hl(), cpu.bc(), cpu.de()), (0x8250, 0xA579, 0x5148));
+                assert_eq!((bus.read_byte(0, 0x824F), bus.read_byte(0, 0x8251)), (above, 0x5A));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn rock_excavation_checks_both_supports_before_capping_each_tunnel_edge() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        // The public recording exposed this rock at X=$51/Y=$48: its two
+        // bottom footprint tiles are $82AA and $828A. Generate the neighborhood
+        // rather than storing a captured game RAM image in the repository.
+        for left_above in [0x7F, 0x00] {
+            for right_above in [0x7F, 0x00] {
+                for left_below in [0x7F, 0x02] {
+                    for right_below in [0x7F, 0x0C] {
+                        let mut bus = DigDugBus::new(roms.clone());
+                        bus.shared_ram.fill(0x5A);
+                        for (address, value) in [
+                            (0x82A9, left_above), (0x8289, right_above),
+                            (0x82AA, 0x08), (0x828A, 0x0A),
+                            (0x82AB, left_below), (0x828B, right_below),
+                        ] { bus.write_byte(0, address, value); }
+                        let mut cpu = boundary_cpu(0x22CB);
+                        cpu.set_hl(0x846E);
+                        cpu.set_de(0x5148);
+                        cpu.set_bc(0xA579);
+                        bus.write_word(0, cpu.sp, 0x4444);
+                        assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+                        step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+                        let check_edges = left_below != 0x7F && right_below != 0x7F;
+                        assert_eq!(bus.read_byte(0, 0x82AA), if check_edges && left_above != 0x7F { 0x0C } else { 0x08 });
+                        assert_eq!(bus.read_byte(0, 0x828A), if check_edges && right_above != 0x7F { 0x02 } else { 0x0A });
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn ghost_reentry_retries_after_lower_vertical_snap_and_preserves_other_exits() {
+        let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
+        // Seed 1 selects vertical motion; seed 0 selects horizontal motion.
+        // Verify at the full VBlank boundary, where caller-saved registers have
+        // their real restored values, rather than masking individual registers.
+        for (seed, x, y, expected_x, expected_y, expected_axis, expected_global) in [
+            (1, 0x31, 0x4E, 0x31, 0x50, 0, 0x30),
+            (1, 0x39, 0x4E, 0x41, 0x50, 2, 0x70),
+            (1, 0x25, 0x2E, 0x21, 0x30, 0, 0x30), // Recorded frame 4071's branch.
+            (0, 0x2F, 0x15, 0x31, 0x08, 0, 0x70),
+            (0, 0x2F, 0x16, 0x31, 0x20, 0, 0x70),
+            (0, 0x2F, 0x35, 0x31, 0x30, 0, 0x70),
+            (0, 0x2F, 0x3D, 0x31, 0x40, 0, 0x70),
+        ] {
+            let mut bus = DigDugBus::new(roms.clone());
+            bus.shared_ram[..0x3C0].fill(0x0C); // Open tunnel footprint.
+            for slot in 0..8 {
+                let base = 0x8525 + slot * 16;
+                bus.write_byte(0, base, 0x80);
+                bus.write_byte(0, base + 2, 0x10);
+                bus.write_byte(0, base + 3, 0x80);
+            }
+            for base in (0x8465..=0x849D).step_by(8) {
+                bus.write_byte(0, base + 2, 0x10); // Disable unrelated rock updates.
+            }
+            for (address, value) in [
+                (0x87CF, 0x20), (0x898E, 0xFF), (0x8400, 0xF8), (0x8401, 0x20),
+                (0x840D, 1), (0x8410, 1), (0x896F, 1), (0x8785, 1), (0x840A, 2),
+                (0x98A2, 0x71), (0x98A3, 0x80), (0x87BD, 0x40), (0x864A, 0x30),
+                (0x8575, 3), (0x8577, 0), (0x8578, 0), (0x8579, x), (0x857A, y),
+            ] { bus.write_byte(0, address, value); }
+            bus.write_word(0, 0x85F4, seed);
+            let mut cpu = boundary_cpu(0x0280);
+            bus.write_word(0, cpu.sp, 0x4444);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!(bus.read_byte(0, 0x8575), 1, "ghost must materialize without changing its type");
+            assert_eq!((bus.read_byte(0, 0x8579), bus.read_byte(0, 0x857A)), (expected_x, expected_y));
+            assert_eq!(bus.read_byte(0, 0x8576), expected_axis);
+            assert_eq!(bus.read_byte(0, 0x864A), expected_global);
+        }
+    }
+
     // Independent timing table for the original instructions reached by the
     // audited bulk routines and Namco NMI handler. Conditional durations use
     // the reference CPU's pre-instruction flags/counters, not native telemetry.
@@ -16720,7 +17044,8 @@ mod translation_tests {
         let roms = DigDugRoms::load_from_extracted_dir(std::path::Path::new("roms/extracted")).unwrap();
         for (pc, expected) in [
             (0x15A6, 52_011), (0x177C, 74_271), (0x17AE, 76_974),
-            (0x12B1, 55_614), (0x17ED, 283), (0x187F, 5_398), (0x1892, 1_470),
+            (0x12B1, 55_614), (0x17ED, 283), (0x187F, 5_398), (0x188D, 5_410),
+            (0x1892, 1_470), (0x18A7, 1_482),
         ] {
             for (a, flags, fill) in [(0, 0, 0), (0xA7, FLAG_C, 0x5A)] {
                 let mut bus = DigDugBus::new(roms.clone());
@@ -16825,6 +17150,12 @@ mod translation_tests {
             assert_eq!((cpu.pc, cpu.sp), (0x044E, 0x99F4));
             assert!(!bus.irq_enable[0], "stage-two fill must finish before IRQ enable");
             assert_eq!(bus.shared_ram[0x400] & 0x80, 0x80);
+            assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
+            let timing_before_round_setup = cpu.audited_cycles;
+            step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
+            assert_eq!((cpu.pc, cpu.sp), (0x048D, 0x99F4));
+            assert!(!bus.irq_enable[0], "stage-two actor/rock work must finish before IRQ enable");
+            assert_eq!(cpu.audited_cycles - timing_before_round_setup, 5_410 + 1_482);
             assert_cpu0_boundary_matches_rom(&roms, &cpu, &bus);
             step_human_cpu0(&mut cpu, &mut bus, &roms, &mut DecompStats::new());
             assert_eq!((cpu.pc, cpu.sp), (0x4444, 0x9A02));

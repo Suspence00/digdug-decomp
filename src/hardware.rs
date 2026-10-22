@@ -36,6 +36,8 @@ pub struct DigDugBus {
     pub earom: [u8; 64],
     pub earom_addr: usize,
     pub earom_data: u8,
+    /// Physical active-low DIP banks returned by the 53XX custom I/O chip.
+    pub dip_switches: [u8; 2],
 
     /// LS259 misc latch ($6820..$6827): [irq0_en, irq1_en, sound_nmi_dis]
     pub irq_enable: [bool; 3],
@@ -70,6 +72,7 @@ impl DigDugBus {
             earom: [0u8; 64],
             earom_addr: 0,
             earom_data: 0,
+            dip_switches: [!DIGDUG_DIP_A, !DIGDUG_DIP_B],
             irq_enable: [false; 3],
             sub_cpu_reset: true,
             video_latch: 0,
@@ -228,8 +231,8 @@ impl DigDugBus {
                 }
             }
             0xD2 => match addr & 0x0F {
-                0 => !DIGDUG_DIP_A,
-                1 => !DIGDUG_DIP_B,
+                0 => self.dip_switches[0],
+                1 => self.dip_switches[1],
                 _ => 0xFF,
             },
             0xB1 => {
@@ -353,13 +356,15 @@ impl DigDugMachine {
         }
     }
 
-    /// Warm-resets the arcade cabinet while preserving the non-volatile 64-byte ER2055 EAROM chip.
+    /// Warm-resets the cabinet while preserving its physical DIP settings and EAROM.
     pub fn warm_reset(&mut self) {
         let saved_earom = self.bus.earom;
+        let saved_dip_switches = self.bus.dip_switches;
         let roms = (*self.bus.roms).clone();
         self.cpus = [Z80::new(0), Z80::new(1), Z80::new(2)];
         self.bus = DigDugBus::new(roms);
         self.bus.earom = saved_earom;
+        self.bus.dip_switches = saved_dip_switches;
         self.decomp = DecompStats::new();
         self.frame_count = 0;
         self.prev_sub_reset = true;
@@ -518,6 +523,37 @@ impl DigDugMachine {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn dip_reads_return_each_cabinets_physical_switch_values() {
+        let mut defaults = DigDugBus::new(crate::test_support::roms(&[]));
+        let mut replay = defaults.clone();
+        assert_eq!(defaults.dip_switches, [0x99, 0x24]);
+        replay.dip_switches = [0xA1, 0x24];
+        for (bus, expected) in [(&mut defaults, [0x99, 0x24]), (&mut replay, [0xA1, 0x24])] {
+            bus.write_byte(0, 0x7100, 0xD2);
+            assert_eq!([bus.read_byte(0, 0x7000), bus.read_byte(0, 0x7001)], expected);
+            assert_eq!(bus.read_byte(0, 0x7002), 0xFF);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+    fn warm_reset_preserves_physical_switches_and_earom() {
+        let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted")).unwrap();
+        let mut machine = DigDugMachine::new(roms);
+        machine.bus.dip_switches = [0xA1, 0x24];
+        // Boot repairs invalid saves, so preserve a valid initialized image.
+        // An unused byte distinguishes preservation from creating fresh EAROM.
+        machine.bus.earom[63] = 0xA7;
+        let earom = machine.bus.earom;
+        machine.warm_reset();
+        assert_eq!(machine.bus.dip_switches, [0xA1, 0x24]);
+        assert_eq!(machine.bus.earom, earom);
+        machine.bus.write_byte(0, 0x7100, 0xD2);
+        assert_eq!(machine.bus.read_byte(0, 0x7000), 0xA1);
+        assert_eq!(machine.bus.read_byte(0, 0x7001), 0x24);
+    }
 
     fn credit_bus() -> DigDugBus {
         let mut bus = DigDugBus::new(crate::test_support::roms(&[]));

@@ -100,6 +100,8 @@ The [MAME frame timeline](docs/MAME_TIMELINE.md) measures boot and gameplay timi
 against an independently running reference machine.
 The [pump behavior guide](docs/PUMP_SYSTEM.md) explains hooking, inflating,
 releasing and scoring, with repeatable gameplay checks.
+The [recorded-game test](docs/REPLAY_TESTING.md) imports a public 47-minute input
+recording, reports actual gameplay coverage, and explains the measured route drift.
 
 ---
 
@@ -114,6 +116,7 @@ releasing and scoring, with repeatable gameplay checks.
 | [`src/verify.rs`](src/verify.rs) | Differential verification comparator, dead-stack filter, and onward liveness analyzer |
 | [`src/z80_ref.rs`](src/z80_ref.rs) | Separate Z80 interpreter used for bounded differential checks |
 | [`src/bin/verify_decomp.rs`](src/bin/verify_decomp.rs) | Differential verification CLI driver with scripted input playback |
+| [`src/bin/replay.rs`](src/bin/replay.rs) | Long input replay runner with explicit cabinet switches, compact CSV output and actual gameplay coverage totals |
 | [`src/video.rs`](src/video.rs) | Upright `224x288` CRT scanline renderer (36x28 tilemap + 64 hardware sprites in `16x16`/`32x32` flip modes), top control bar, and `[Tab]` hardware/memory inspector |
 | [`src/audio.rs`](src/audio.rs) | Real-time 44.1 kHz 3-channel Namco WSG wavetable synthesizer driven by dual 120 Hz sub-frame register snapshots |
 | [`src/rom.rs`](src/rom.rs) | Runtime loader, `digdug.zip` auto-extractor, and ROT90 tile/sprite/PROM decoder |

@@ -223,6 +223,7 @@ fn bus_state_matches(a: &DigDugBus, b: &DigDugBus, sp: u16) -> bool {
     ram_matches
         && a.sound_regs == b.sound_regs && a.sound_regs_tick0 == b.sound_regs_tick0
         && a.earom == b.earom && a.earom_addr == b.earom_addr && a.earom_data == b.earom_data
+        && a.dip_switches == b.dip_switches
         && a.irq_enable == b.irq_enable && a.sub_cpu_reset == b.sub_cpu_reset
         && a.video_latch == b.video_latch && a.game_started == b.game_started
         && a.namco_command == b.namco_command && a.namco_mode == b.namco_mode
@@ -280,6 +281,7 @@ fn compare(rust: &Z80, rbus: &DigDugBus, refc: &Z80, refbus: &DigDugBus) -> Diff
     busf!("earom", earom);
     busf!("earom_addr", earom_addr);
     busf!("earom_data", earom_data);
+    busf!("dip_switches", dip_switches);
     busf!("irq_enable", irq_enable);
     busf!("sub_cpu_reset", sub_cpu_reset);
     busf!("video_latch", video_latch);
@@ -490,6 +492,25 @@ mod tests {
             assert_eq!(log.reference_halts.values().sum::<u64>(), u64::from(expected == "halt"));
             assert_eq!(log.unsupported.values().sum::<u64>(), u64::from(expected == "unsupported"));
             assert_eq!(log.outcome(false), VerificationOutcome::Inconclusive);
+        }
+    }
+
+    #[test]
+    fn physical_dip_changes_are_state_mismatches_before_any_game_read() {
+        for bank in 0..2 {
+            let (pre, bus, _, _) = states(&[0]); // NOP does not read cabinet settings.
+            let mut post = pre.clone();
+            let mut post_bus = bus.clone();
+            ref_step(&mut post, &mut post_bus).unwrap();
+            post_bus.dip_switches[bank] ^= 1;
+            assert!(!bus_state_matches(&bus, &post_bus, post.sp));
+            let mut log = VerifyLog::new(10);
+            log.check(1, "synthetic DIP change", &pre, &bus, &post, &post_bus);
+            assert_eq!(log.checked, 1);
+            assert_eq!(log.outcome(false), VerificationOutcome::Failed);
+            let mismatch = &log.mismatches[&(0, 0)];
+            assert_eq!(mismatch.state_count, 1);
+            assert!(mismatch.state_example.iter().any(|line| line.contains("bus.dip_switches")));
         }
     }
 

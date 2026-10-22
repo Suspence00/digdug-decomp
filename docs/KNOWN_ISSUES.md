@@ -12,8 +12,10 @@
   mode changes are not implemented. See [input model limits](NAMCO_INPUTS.md).
 - **Coverage is incomplete.** Focused checks cover startup, movement, deaths,
   player handoffs, a natural [pump encounter](PUMP_SYSTEM.md), and selected
-  transitions. They do not establish every input
-  sequence, late-round behavior or long-session stability.
+  transitions. A [47-minute recorded input test](REPLAY_TESTING.md) completed
+  without a crash, but its native player lost synchronization during round 2
+  and reached game over. Later title-screen frames do not establish later-round
+  coverage. Every input sequence and late-round gameplay remain unproven.
 - **Sound and visuals need human assessment.** Smoke checks confirm output is
   produced; pixel, waveform and original hardware timing equivalence are unproven.
 - **Much of the source remains processor-oriented.** Movement geometry, turns,
