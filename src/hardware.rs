@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::decomp::{
     step_human_cpu0, step_human_cpu1, step_human_cpu2, DecompStats, GameStateSnapshot,
 };
+use crate::namco51::CoinStartInputs;
 use crate::rom::DigDugRoms;
 use crate::timing::{CyclePacer, CPU_STEPS_PER_FRAME};
 use crate::z80::{Z80, Z80Bus};
@@ -47,6 +48,8 @@ pub struct DigDugBus {
     pub namco_mode: u8,
     pub namco_nmi_counter: u8,
     pub namco_credit: u8,
+    /// Frame-qualified coin/start inputs, separate from raw movement/fire reads.
+    pub(crate) coin_start_inputs: CoinStartInputs,
 
     /// Live controller button bitmask and 3-read history for edge detection
     pub buttons: u8,
@@ -75,6 +78,7 @@ impl DigDugBus {
             namco_mode: 0,
             namco_nmi_counter: 0,
             namco_credit: 0,
+            coin_start_inputs: CoinStartInputs::default(),
             buttons: 0,
             keymask_d: [0; 3],
             trace: None,
@@ -98,6 +102,10 @@ impl DigDugBus {
             } else {
                 self.namco_nmi_counter = 0;
             }
+        } else if self.namco_command & 0x11 == 0x01 {
+            // 06XX selects the 51XX in write mode. Its data commands, rather
+            // than the transfer clock divider, enable or disable start credit.
+            self.coin_start_inputs.write_data(val);
         }
     }
 
@@ -120,25 +128,20 @@ impl DigDugBus {
             self.keymask_d[1] = self.keymask_d[0];
             self.keymask_d[0] = keymask;
 
-            if (self.keymask_d[0] & INPUT_COIN) != 0
-                && (self.keymask_d[1] & INPUT_COIN) == 0
-                && self.namco_credit < 99
-            {
-                self.namco_credit += 1;
-            }
-
-            if (self.keymask_d[0] & INPUT_START1) != 0
-                && (self.keymask_d[1] & INPUT_START1) == 0
-                && self.namco_credit > 0
-            {
-                self.namco_credit -= 1;
-            }
-
-            if (self.keymask_d[0] & INPUT_START2) != 0
-                && (self.keymask_d[1] & INPUT_START2) == 0
-                && self.namco_credit >= 2
-            {
-                self.namco_credit -= 2;
+            let presses = self.coin_start_inputs.take_presses();
+            if self.namco_mode == 0 {
+                if presses & INPUT_COIN != 0 && self.namco_credit < 99 {
+                    self.namco_credit += 1;
+                }
+                if self.coin_start_inputs.starts_enabled {
+                    if presses & INPUT_START1 != 0 && self.namco_credit > 0 {
+                        self.namco_credit -= 1;
+                        self.coin_start_inputs.disable_starts();
+                    } else if presses & INPUT_START2 != 0 && self.namco_credit >= 2 {
+                        self.namco_credit -= 2;
+                        self.coin_start_inputs.disable_starts();
+                    }
+                }
             }
         }
 
@@ -279,6 +282,7 @@ impl Z80Bus for DigDugBus {
                         self.namco_command = 0;
                         self.namco_mode = 0;
                         self.namco_nmi_counter = 0;
+                        self.coin_start_inputs.reset();
                     }
                 }
             }
@@ -423,6 +427,17 @@ impl DigDugMachine {
         self.frame_count += 1;
         self.decomp.calls_this_frame = 0;
 
+        // The 51XX qualifies coin/start switches on its VBlank clock. Repeated
+        // host reads in one frame must not turn a short pulse into a valid press.
+        if self.bus.sub_cpu_reset {
+            self.bus.coin_start_inputs.reset();
+        } else {
+            self.bus.coin_start_inputs.sample_frame(self.bus.buttons);
+            if self.bus.namco_mode != 0 {
+                self.bus.coin_start_inputs.clear_presses();
+            }
+        }
+
         // VBlank interrupts (IM 1 -> RST $38) for CPU 0 and CPU 1
         if self.bus.irq_enable[0] {
             self.cpus[0].trigger_irq(&mut self.bus);
@@ -495,6 +510,74 @@ impl DigDugMachine {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    fn credit_bus() -> DigDugBus {
+        let mut bus = DigDugBus::new(crate::test_support::roms(&[]));
+        bus.write_byte(0, 0x7100, 0xC1);
+        bus.write_byte(0, 0x7000, 2);
+        bus.write_byte(0, 0x7100, 0x71);
+        bus
+    }
+
+    fn poll_credit_frame(bus: &mut DigDugBus, buttons: u8) -> u8 {
+        bus.buttons = buttons;
+        bus.coin_start_inputs.sample_frame(buttons);
+        bus.read_byte(0, 0x7000)
+    }
+
+    #[test]
+    fn repeated_host_reads_do_not_qualify_short_coin_pulses_or_duplicate_credits() {
+        let mut bus = credit_bus();
+        bus.buttons = INPUT_COIN;
+        for _ in 0..100 { assert_eq!(bus.read_byte(0, 0x7000), 0); }
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_COIN), 0);
+        for _ in 0..100 { assert_eq!(bus.read_byte(0, 0x7000), 0); }
+        assert_eq!(poll_credit_frame(&mut bus, 0), 0);
+        assert_eq!(poll_credit_frame(&mut bus, 0), 0);
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_COIN), 0);
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_COIN), 1);
+        for _ in 0..100 { assert_eq!(bus.read_byte(0, 0x7000), 1); }
+        assert_eq!(poll_credit_frame(&mut bus, 0), 1);
+        for _ in 0..3 { assert_eq!(poll_credit_frame(&mut bus, INPUT_COIN), 1); }
+        poll_credit_frame(&mut bus, 0);
+        poll_credit_frame(&mut bus, 0);
+        poll_credit_frame(&mut bus, INPUT_COIN);
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_COIN), 2);
+    }
+
+    #[test]
+    fn start_deductions_stay_disabled_until_the_51xx_data_command_rearms_them() {
+        let mut bus = credit_bus();
+        bus.namco_credit = 3;
+        poll_credit_frame(&mut bus, INPUT_START1);
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_START1), 2);
+        for _ in 0..2 { poll_credit_frame(&mut bus, 0); }
+        for _ in 0..6 { assert_eq!(poll_credit_frame(&mut bus, INPUT_START2), 2); }
+        bus.write_byte(0, 0x7100, 0xC1); // Transfer setup alone cannot rearm start.
+        bus.write_byte(0, 0x7100, 0x71);
+        for _ in 0..2 { poll_credit_frame(&mut bus, 0); }
+        for _ in 0..2 { assert_eq!(poll_credit_frame(&mut bus, INPUT_START1), 2); }
+        bus.write_byte(0, 0x7100, 0xC1);
+        bus.write_byte(0, 0x7000, 2);
+        bus.write_byte(0, 0x7100, 0x71);
+        for _ in 0..2 { poll_credit_frame(&mut bus, 0); }
+        poll_credit_frame(&mut bus, INPUT_START2);
+        assert_eq!(poll_credit_frame(&mut bus, INPUT_START2), 0);
+    }
+
+    #[test]
+    fn switch_mode_reads_keep_raw_controls_and_do_not_add_credits() {
+        let mut bus = credit_bus();
+        bus.write_byte(0, 0x7100, 0xA1);
+        bus.write_byte(0, 0x7000, 5);
+        bus.write_byte(0, 0x7100, 0x71);
+        for _ in 0..2 { poll_credit_frame(&mut bus, INPUT_COIN); }
+        assert_eq!(bus.namco_credit, 0);
+        bus.buttons = INPUT_RIGHT | INPUT_FIRE;
+        assert_eq!(bus.read_byte(0, 0x7001) & 0x22, 0);
+        bus.buttons = 0;
+        assert_eq!(bus.read_byte(0, 0x7001) & 0x22, 0x22);
+    }
 
     fn isolated_cpu0() -> DigDugMachine {
         let mut machine = DigDugMachine::new_unbooted(crate::test_support::roms(&[]));

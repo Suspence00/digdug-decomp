@@ -106,6 +106,62 @@ fn initial_round_keeps_mame_duration_relative_to_accepted_start() {
 
 #[test]
 #[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+fn qualified_coin_and_two_player_start_frames_match_mame() {
+    let roms = DigDugRoms::load_from_extracted_dir(Path::new("roms/extracted")).unwrap();
+    let mut machine = DigDugMachine::new_unbooted(roms);
+    let mut credit_changes = Vec::new();
+    let mut previous_credit = 0;
+    let (mut accepted, mut initialized, mut spawned) = (None, None, None);
+    // Matches tools/mame/input_qualification.txt and its independent MAME run.
+    // Single-frame presses and a one-frame coin release must not produce edges.
+    for frame in 1..=830 {
+        let buttons = match frame {
+            760 | 766..=767 | 769..=771 | 774..=775 => INPUT_COIN,
+            788 | 793..=794 => INPUT_START2,
+            _ => 0,
+        };
+        run(&mut machine, buttons, 1);
+        if frame >= 700 {
+            let credit = machine.bus.shared_ram[0x5A5];
+            if credit != previous_credit {
+                credit_changes.push((frame, credit));
+                previous_credit = credit;
+            }
+        }
+        let s = machine.snapshot();
+        if s.in_game && !s.attract_demo {
+            accepted.get_or_insert(frame);
+            let flags = machine.bus.shared_ram[0x400];
+            if flags & 0x80 != 0 { initialized.get_or_insert(frame); }
+            if flags & 0x30 == 0x30 && s.active_enemies > 0 { spawned.get_or_insert(frame); }
+        }
+    }
+    assert_eq!(credit_changes, [(768, 1), (776, 2), (795, 0)]);
+    assert_eq!((accepted, initialized, spawned), (Some(795), Some(821), Some(824)));
+}
+
+#[test]
+#[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
+fn start_buttons_during_gameplay_preserve_the_remaining_credit() {
+    let mut machine = cabinet();
+    run(&mut machine, 0, 5);
+    for _ in 0..2 {
+        run(&mut machine, INPUT_COIN, 6);
+        run(&mut machine, 0, 14);
+    }
+    run(&mut machine, INPUT_START1, 6);
+    run(&mut machine, 0, 330);
+    assert!(machine.snapshot().in_game);
+    assert_eq!(machine.bus.namco_credit, 1);
+    for buttons in [INPUT_START1, INPUT_START2, INPUT_START1 | INPUT_START2] {
+        run(&mut machine, buttons, 6);
+        run(&mut machine, 0, 4);
+        assert_eq!(machine.bus.namco_credit, 1);
+    }
+}
+
+#[test]
+#[ignore = "requires user-supplied Dig Dug Rev 2 ROMs; run with --include-ignored"]
 fn two_players_alternate_after_deaths_and_finish_then_start_a_fresh_game() {
     let mut machine = cabinet();
     start(&mut machine, true);

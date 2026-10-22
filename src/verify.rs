@@ -228,6 +228,7 @@ fn bus_state_matches(a: &DigDugBus, b: &DigDugBus, sp: u16) -> bool {
         && a.namco_command == b.namco_command && a.namco_mode == b.namco_mode
         && a.namco_nmi_counter == b.namco_nmi_counter && a.namco_credit == b.namco_credit
         && a.buttons == b.buttons && a.keymask_d == b.keymask_d
+        && a.coin_start_inputs == b.coin_start_inputs
 }
 
 fn compare(rust: &Z80, rbus: &DigDugBus, refc: &Z80, refbus: &DigDugBus) -> Diff {
@@ -287,6 +288,7 @@ fn compare(rust: &Z80, rbus: &DigDugBus, refc: &Z80, refbus: &DigDugBus) -> Diff
     busf!("namco_mode", namco_mode);
     busf!("namco_nmi_counter", namco_nmi_counter);
     busf!("namco_credit", namco_credit);
+    busf!("coin_start_inputs", coin_start_inputs);
     busf!("keymask_d", keymask_d);
     busf!("buttons", buttons);
 
@@ -501,6 +503,8 @@ mod tests {
             (|b: &mut DigDugBus| b.sound_regs_tick0[0] = 1) as fn(&mut DigDugBus),
             |b: &mut DigDugBus| b.game_started = true,
             |b: &mut DigDugBus| b.buttons = 1,
+            |b: &mut DigDugBus| b.coin_start_inputs.sample_frame(0x40),
+            |b: &mut DigDugBus| b.coin_start_inputs.write_data(2),
         ] {
             bb = ab.clone();
             change(&mut bb);

@@ -5,6 +5,11 @@ routine verifier, its reference runs an independent hardware model for the whole
 scenario. It reports milestone frame differences and the first difference in
 selected gameplay state. A passing comparison covers these observations only.
 
+Use this as a diagnostic for unintended changes to gameplay rules and pacing.
+Exact agreement is not a release requirement: prioritize visible bugs, controls,
+and maintainability when deciding which differences deserve work. Boot duration
+and individual frame offsets are useful evidence, not goals by themselves.
+
 ## Run it
 
 Supply the supported Rev 2 ROMs in `roms/extracted`, plus a local MAME installation
@@ -95,29 +100,50 @@ every RAM byte, ordered bus effects, graphics or audio equivalence. The
 
 On 2026-10-21, the corrected 1,600-frame replay against MAME 0.289 produced the
 following result. Program fingerprint: `FAE4D33B`; all conditions above matched.
-The comparison still returns **1** because boot, input and movement observations
-remain different. Initialization durations relative to accepted start now match.
+The comparison still returns **1** because boot, some setup state and movement
+observations remain different. Coin/start acceptance and initialization/spawn
+milestones now match on the same absolute frames.
 
 | Milestone | Native frame | MAME frame | Native minus MAME | Delta relative to accepted start |
 | --- | ---: | ---: | ---: | ---: |
 | Title ready | 146 | 715 | -569 | — |
-| Coin accepted | 761 | 762 | -1 | 0 |
-| Start accepted | 827 | 828 | -1 | 0 |
-| New-game setup begins | 828 | 829 | -1 | 0 |
-| Round initialization begins | 853 | 854 | -1 | 0 |
-| Entities spawned | 856 | 857 | -1 | 0 |
-| First input movement | 1132 | 1134 | -2 | -1 |
+| Coin accepted | 762 | 762 | 0 | 0 |
+| Start accepted | 828 | 828 | 0 | 0 |
+| New-game setup begins | 829 | 829 | 0 | 0 |
+| Round initialization begins | 854 | 854 | 0 | 0 |
+| Entities spawned | 857 | 857 | 0 | 0 |
+| First input movement | 1133 | 1134 | -1 | -1 |
 
 Round initialization begins 26 frames after accepted start on both machines;
 entities spawn after 29 frames on both. Previously the native port spawned after
 only five frames, accelerating setup by 24 frames. The initial runner reported
 a 26-frame absolute spawn lead; one frame was its input-cache measurement error,
-and one remains as an absolute acceptance offset in this replay.
+and one came from missing coin/start qualification. Both sources of that extra
+two-frame lead have been resolved in this replay.
 
-The first selected state mismatch remains the latched credit byte `$85A5` at
-frame 761: native `01`, MAME `00`. First movement occurs much later because the
+The first selected state mismatch is now player one's reserve lives at `$840A`
+on frame 850: native `03`, MAME `00`. This identifies an intermediate setup-state
+difference; it does not by itself establish an incorrect final life count.
+First movement occurs much later because the
 replay waits before pressing a direction; it does not measure the earliest frame
-movement is possible. These remaining differences need separate investigation.
+movement is possible.
+
+## Coin/start qualification replay
+
+The [coin/start input model](NAMCO_INPUTS.md) was checked with one-frame pulses,
+a one-frame release between coin presses, and two-player start:
+
+```powershell
+pwsh -NoProfile -File tools/mame/run_timeline.ps1 -Script tools/mame/input_qualification.txt
+```
+
+Native and MAME both change the game's credit latch `$85A5` at frames 768 (`01`),
+776 (`02`), and 795 (`00`). Both accept start at 795, begin round initialization
+at 821, and spawn at 824. The replay still returns **1**: title readiness differs,
+the first selected setup-state difference is `$840A` at frame 817, and first
+input movement occurs at native 1128 versus MAME 1125. The input fix is supported
+by the matching credit events and dedicated regressions, not by a claim that the
+whole-machine comparison passes.
 
 ## Audited initialization pacing
 

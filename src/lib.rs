@@ -2,6 +2,7 @@ pub mod audio;
 pub mod decomp;
 pub mod disasm;
 pub mod hardware;
+mod namco51;
 pub mod player;
 pub mod rom;
 pub mod symbols;

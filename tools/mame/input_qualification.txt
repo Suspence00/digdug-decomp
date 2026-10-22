@@ -1,0 +1,22 @@
+# Reproducible coin/start qualification replay. Default script start: frame 700.
+# Each line is '<buttons hex> <frames>'; unlisted final frames stay neutral.
+# Bits: 02 RIGHT, 04 DOWN, 10 FIRE, 40 COIN, 80 START2.
+00 60
+40 1       # frame 760: one-frame coin pulse must be rejected.
+00 5
+40 2       # frames 766..767: qualified coin, credit becomes 1.
+00 1       # frame 768: one neutral frame must not rearm coin acceptance.
+40 3       # frames 769..771: credit must remain 1.
+00 2       # frames 772..773: qualified release rearms the coin input.
+40 2       # frames 774..775: second qualified coin, credit becomes 2.
+00 12
+80 1       # frame 788: one-frame two-player start must be rejected.
+00 4
+80 2       # frames 793..794: qualified start consumes both credits.
+00 330
+02 30      # frames 1125..1154: ordinary movement remains responsive.
+00 30
+10 6       # frames 1185..1190: pump/harpoon held-input smoke exercise.
+00 30
+04 30      # frames 1221..1250: continue the active game.
+00 20
