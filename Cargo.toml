@@ -15,7 +15,7 @@ name = "analyze"
 path = "src/bin/analyze.rs"
 
 [dependencies]
-minifb = "0.27"
+minifb = "0.29"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
